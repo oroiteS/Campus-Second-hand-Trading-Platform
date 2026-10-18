@@ -1,5 +1,10 @@
-docs/ 实验过程/
+# docs
 docs/实验过程/
 .obsidian/
-.tmp-render/
-node_modules/
+
+# database
+.chromadb/
+.mongodb/
+.mysql/
+.redis/
+
