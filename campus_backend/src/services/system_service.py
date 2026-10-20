@@ -21,7 +21,10 @@ _CST = timezone(timedelta(hours=8))
 
 # 探活超时（秒）：本地容器应毫秒级返回，超时仅用于防止挂死
 _PROBE_TIMEOUT_S = 3.0
-_EMBEDDING_TIMEOUT_S = 10.0
+# Embedding 探活超时：云端 5s（对外网络），本地侧车 15s（首次请求可能伴随
+# 权重换页，但侧车启动时已预热，稳态毫秒级；超时只用于防止挂死）
+_EMBEDDING_TIMEOUT_S = 5.0
+_EMBEDDING_LOCAL_TIMEOUT_S = 15.0
 _ERROR_SUMMARY_MAX = 200
 
 
@@ -91,26 +94,67 @@ def _ping_chroma(host: str, port: int) -> None:
     chromadb.HttpClient(host=host, port=port)
 
 
-def _embedding_health(base_url: str, api_key: str, model: str, dim: int) -> dict:
-    """Embedding 端点探活（批次 0 仅云端模式）：真实发一次向量化请求。
+def _embedding_ping(base_url: str, api_key: str, model: str, timeout_s: float) -> None:
+    """向 OpenAI 兼容端点真实发一次向量化请求（失败抛异常）。
 
-    契约 EmbeddingHealth 固定返回 mode/model/dim/status 四字段：云端可用
-    mode=cloud；不可用 mode=null 且 status=down（细节落日志，不进响应）。
+    复用项目已有 ``openai`` 包，与云端同构；不记录 api_key，异常摘要由
+    调用方经 ``_summarize`` 截断后落日志。
+    """
+    from openai import OpenAI
+
+    client = OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout_s,
+        max_retries=0,
+    )
+    client.embeddings.create(input=["ping"], model=model)
+
+
+def _embedding_health(
+    *,
+    cloud_base_url: str,
+    cloud_api_key: str,
+    cloud_model: str,
+    dim: int,
+    local_base_url: str = "",
+    local_model: str = "",
+    local_enabled: bool = False,
+) -> dict:
+    """Embedding 双模探活（云端优先、本地兜底），返回契约 EmbeddingHealth。
+
+    判定顺序与映射（契约硬规则，不得偏离）：
+
+    1. 云端可用 → ``mode=cloud, model=云端模型, dim, status=up``；
+    2. 云端不可用且本地兜底启用 + 本地可用 →
+       ``mode=local, model=本地模型, dim, status=up``；
+    3. 都不可用 → ``mode=None, model=云端模型, dim, status=down``。
+
+    云端失败必定落日志（仅原因摘要，不含凭据）。本函数不抛异常，整体
+    健康检查因此仍能返回 HTTP 200，由 ``data.status=degraded`` 表达降级。
     """
     try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=_EMBEDDING_TIMEOUT_S,
-            max_retries=0,
-        )
-        client.embeddings.create(input=["ping"], model=model)
+        _embedding_ping(cloud_base_url, cloud_api_key, cloud_model, _EMBEDDING_TIMEOUT_S)
     except Exception as exc:
-        current_app.logger.warning("embedding 探活失败（云端模式不可用）: %s", _summarize(exc))
-        return {"mode": None, "model": model, "dim": dim, "status": "down"}
-    return {"mode": "cloud", "model": model, "dim": dim, "status": "up"}
+        current_app.logger.warning("embedding 探活失败（云端不可用）: %s", _summarize(exc))
+    else:
+        return {"mode": "cloud", "model": cloud_model, "dim": dim, "status": "up"}
+
+    if not local_enabled:
+        current_app.logger.warning("embedding 本地兜底已禁用（EMBEDDING_LOCAL_ENABLED=false）")
+        return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
+    if not local_base_url or not local_model:
+        current_app.logger.warning("embedding 本地兜底配置缺失（base_url/model 为空）")
+        return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
+
+    try:
+        # 本地侧车不校验 api_key，但 OpenAI 客户端要求非空，给占位值
+        _embedding_ping(local_base_url, "local", local_model, _EMBEDDING_LOCAL_TIMEOUT_S)
+    except Exception as exc:
+        current_app.logger.warning("embedding 探活失败（本地兜底不可用）: %s", _summarize(exc))
+        return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
+    current_app.logger.info("embedding 已降级到本地侧车：%s", local_base_url)
+    return {"mode": "local", "model": local_model, "dim": dim, "status": "up"}
 
 
 @dataclass(frozen=True)
@@ -148,10 +192,13 @@ def build_default_probes() -> HealthProbes:
     def probe_embedding() -> dict:
         config = current_app.config
         return _embedding_health(
-            config["EMBEDDING_BASE_URL"],
-            config["EMBEDDING_API_KEY"],
-            config["EMBEDDING_MODEL"],
-            config["EMBEDDING_DIM"],
+            cloud_base_url=config["EMBEDDING_BASE_URL"],
+            cloud_api_key=config["EMBEDDING_API_KEY"],
+            cloud_model=config["EMBEDDING_MODEL"],
+            dim=config["EMBEDDING_DIM"],
+            local_base_url=config.get("EMBEDDING_LOCAL_BASE_URL", ""),
+            local_model=config.get("EMBEDDING_LOCAL_MODEL", ""),
+            local_enabled=config.get("EMBEDDING_LOCAL_ENABLED", False),
         )
 
     return HealthProbes(

@@ -45,6 +45,40 @@ uv run python main.py          # host/port 来自 .env（HOST 固定 127.0.0.1�
 - `GET /api/openapi.json` —— 契约原文的 JSON 序列化
 - `GET /api/docs` —— Swagger UI（flask-swagger-ui，离线静态资源）
 
+## Embedding 双模（云端优先、本地侧车兜底）
+
+Embedding 端点有两种生效模式，`/api/health` 的 `data.embedding.mode` 如实上报：
+
+| 场景 | mode | model | status | 整体 status |
+| --- | --- | --- | --- | --- |
+| 云端可用 | `cloud` | `EMBEDDING_MODEL` | `up` | `ok` |
+| 云端不可用、本地侧车可用 | `local` | `EMBEDDING_LOCAL_MODEL` | `up` | `ok` |
+| 都不可用（或本地被禁用） | `null` | `EMBEDDING_MODEL` | `down` | `degraded` |
+
+判定顺序固定为 **cloud → local → down**：先探云端（5s 超时），失败且
+`EMBEDDING_LOCAL_ENABLED=true` 时才探本地侧车；两者都失败仍 **HTTP 200**，
+只让 `data.status = degraded`。云端失败必落 WARNING 日志（仅原因摘要，不含凭据）。
+
+本地侧车是**独立 Python 3.10 进程**（torch/MPS 与后端运行时不同），位于仓库根
+`tools/local_embedding/`，后端只经 HTTP（OpenAI 兼容）调用它：
+
+```bash
+# 仓库根执行（首次加载模型约 3s，默认监听 127.0.0.1:8010）
+~/my/torch_python/.venv/bin/python tools/local_embedding/server.py
+curl -s http://127.0.0.1:8010/health | python3 -m json.tool   # status=ok, dim=1024
+```
+
+后端 `.env` 对应三项（`.env.example` 已含模板）：
+
+```dotenv
+EMBEDDING_LOCAL_BASE_URL=http://127.0.0.1:8010/v1
+EMBEDDING_LOCAL_MODEL=qwen3_embedding_0_6b
+EMBEDDING_LOCAL_ENABLED=true
+```
+
+启动方式、API 细节、`input_type` 查询前缀、常见问题见
+[`tools/local_embedding/README.md`](../tools/local_embedding/README.md)。
+
 ## 测试与 Lint
 
 ```bash

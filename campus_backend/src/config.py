@@ -38,6 +38,23 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    """布尔型环境变量；无法识别的取值回退默认值（笔误不应导致启动失败）。"""
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    return default
+
+
 _UPLOAD_DIR_RAW = _env_str("UPLOAD_DIR", "uploads")
 _UPLOAD_PATH = Path(_UPLOAD_DIR_RAW)
 
@@ -87,11 +104,18 @@ class Config:
     CHROMA_PORT = _env_int("CHROMA_PORT", 8000)
     CHROMA_COLLECTION_SUFFIX = _env_str("CHROMA_COLLECTION_SUFFIX", "")
 
-    # ---- Embedding（OpenAI 兼容端点；批次 0 仅云端模式）----
+    # ---- Embedding（OpenAI 兼容端点；云端优先、本地侧车兜底的双模）----
     EMBEDDING_BASE_URL = _env_str("EMBEDDING_BASE_URL", "")
     EMBEDDING_API_KEY = _env_str("EMBEDDING_API_KEY", "")
     EMBEDDING_MODEL = _env_str("EMBEDDING_MODEL", "")
     EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 1024)
+
+    # ---- 本地 Embedding 侧车（tools/local_embedding，OpenAI 兼容，默认 8010）----
+    # 云端不可用时按 EMBEDDING_LOCAL_ENABLED 决定是否降级到本地；三者
+    # 均非敏感信息，可入 .env 与文档。
+    EMBEDDING_LOCAL_BASE_URL = _env_str("EMBEDDING_LOCAL_BASE_URL", "http://127.0.0.1:8010/v1")
+    EMBEDDING_LOCAL_MODEL = _env_str("EMBEDDING_LOCAL_MODEL", "qwen3_embedding_0_6b")
+    EMBEDDING_LOCAL_ENABLED = _env_bool("EMBEDDING_LOCAL_ENABLED", True)
 
     # ---- 上传 ----
     UPLOAD_DIR = str(_UPLOAD_PATH if _UPLOAD_PATH.is_absolute() else BASE_DIR / _UPLOAD_PATH)
