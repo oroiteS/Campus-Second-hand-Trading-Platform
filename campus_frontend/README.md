@@ -27,6 +27,13 @@ pnpm dev       # dev server（vite.config.ts 固定 127.0.0.1:5180，代理 /api
 `VITE_API_BASE` 留空（走同源 `/api`）+ `VITE_PROXY_TARGET` 指向后端。
 
 dev server 显式绑定 `127.0.0.1:5180`（`server.host: '127.0.0.1'`），联调一律使用 `127.0.0.1` 字面地址。
+开启 `strictPort: true`：5180 被占用时启动直接失败，不静默漂移到 5181，避免联调按固定端口连错进程。
+
+### 联调注意（必读）
+
+- **联调前须把 `VITE_USE_MOCK` 置 `false` 或留空**。模板默认为 `true`（只服务契约未就绪的开发期），
+  忘记关会导致页面看似正常但全程走 `src/api/mock/` 假数据，联调结论无效。
+- 推荐姿势：`VITE_USE_MOCK=false` + `VITE_API_BASE` 留空（同源 `/api`）+ `VITE_PROXY_TARGET` 指向目标后端。
 
 ## 目录与纪律
 
