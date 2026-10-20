@@ -266,3 +266,104 @@ class TestDefaultProbesWiring:
         assert config_module._env_str("EMBEDDING_LOCAL_MODEL", "qwen3_embedding_0_6b") == (
             "qwen3_embedding_0_6b"
         )
+
+
+class TestEmptyCloudConfigGuard:
+    """P2-4：base_url / key / model 为空时必须短路，绝不外发请求。
+
+    ``OpenAI(base_url="")`` 会隐式回落到官方 ``https://api.openai.com/v1``，
+    若 api_key 非空则凭据外泄；因此这三条是安全用例，不能只测"不报错"。
+    """
+
+    @staticmethod
+    def _run(app, **overrides):
+        kwargs = {
+            "cloud_base_url": _DualModeConfig.EMBEDDING_BASE_URL,
+            "cloud_api_key": _DualModeConfig.EMBEDDING_API_KEY,
+            "cloud_model": _DualModeConfig.EMBEDDING_MODEL,
+            "dim": 1024,
+            "local_base_url": "",
+            "local_model": "",
+            "local_enabled": False,
+        }
+        kwargs.update(overrides)
+        stub = _StubPing()
+        with app.app_context():
+            original = system_service._embedding_ping
+            system_service._embedding_ping = stub
+            try:
+                result = _embedding_health(**kwargs)
+            finally:
+                system_service._embedding_ping = original
+        return result, stub.calls
+
+    @pytest.mark.parametrize(
+        ("overrides", "missing"),
+        [
+            ({"cloud_base_url": ""}, "EMBEDDING_BASE_URL"),
+            ({"cloud_base_url": "   "}, "EMBEDDING_BASE_URL"),
+            ({"cloud_api_key": ""}, "EMBEDDING_API_KEY"),
+            ({"cloud_model": ""}, "EMBEDDING_MODEL"),
+        ],
+    )
+    def test_empty_cloud_config_sends_no_request(self, dual_app, caplog, overrides, missing):
+        with caplog.at_level("WARNING"):
+            result, calls = self._run(dual_app, **overrides)
+        assert calls == [], "云端配置不全时不得发起任何请求（防 base_url 回落外发）"
+        assert result["status"] == "down"
+        assert result["mode"] is None
+        assert result["model"] == overrides.get("cloud_model", _DualModeConfig.EMBEDDING_MODEL)
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert missing in messages
+        # 报错只提变量名，绝不回显取值
+        assert _DualModeConfig.EMBEDDING_API_KEY not in messages
+
+    def test_ping_itself_refuses_empty_base_url(self):
+        """第二道防线：即使绕过入口判空，``_embedding_ping`` 也不发请求。"""
+        with pytest.raises(ValueError, match="未配置"):
+            system_service._embedding_ping("", "some-key", "model", 1.0)
+
+    def test_empty_cloud_falls_back_to_local_when_enabled(self, dual_app):
+        result, calls = self._run(
+            dual_app,
+            cloud_base_url="",
+            local_base_url="http://127.0.0.1:8010/v1",
+            local_model="qwen3_embedding_0_6b",
+            local_enabled=True,
+        )
+        assert result["mode"] == "local"
+        assert [call["base_url"] for call in calls] == ["http://127.0.0.1:8010/v1"]
+
+
+class TestInlineCommentTolerance:
+    """P2-3：``.env`` 行内注释不得影响数值 / 布尔解析。"""
+
+    def test_env_bool_strips_inline_comment(self, monkeypatch):
+        from src import config as config_module
+
+        cases = {
+            "true # false=关闭本地兜底": True,
+            "false   # 关闭": False,
+            "TRUE#注释": True,
+            "1 # on": True,
+            "0 # off": False,
+            "# 全是注释": True,  # 空值回退默认
+        }
+        for raw, expected in cases.items():
+            monkeypatch.setenv("__B0BE2_BOOL__", raw)
+            assert config_module._env_bool("__B0BE2_BOOL__", True) is expected, raw
+
+    def test_env_int_strips_inline_comment(self, monkeypatch):
+        from src import config as config_module
+
+        cases = {"1024 # 维度": 1024, "8010 # 端口": 8010, "# 注释": 7, "abc": 7}
+        for raw, expected in cases.items():
+            monkeypatch.setenv("__B0BE2_INT__", raw)
+            assert config_module._env_int("__B0BE2_INT__", 7) == expected, raw
+
+    def test_env_str_keeps_hash_for_secrets(self, monkeypatch):
+        """字符串型变量（密钥/密码）里的 ``#`` 必须原样保留，不能被当注释。"""
+        from src import config as config_module
+
+        monkeypatch.setenv("__B0BE2_STR__", "p#ss#word")
+        assert config_module._env_str("__B0BE2_STR__") == "p#ss#word"

@@ -99,7 +99,14 @@ def _embedding_ping(base_url: str, api_key: str, model: str, timeout_s: float) -
 
     复用项目已有 ``openai`` 包，与云端同构；不记录 api_key，异常摘要由
     调用方经 ``_summarize`` 截断后落日志。
+
+    入口再做一次兜底校验：``OpenAI(base_url="")`` 会回落到官方
+    ``https://api.openai.com/v1``，若此时 api_key 非空，凭据就会被发到境外
+    端点。调用方已提前判空，这里再加一道防线（防御未来新调用点）。
     """
+    if not base_url or not api_key:
+        raise ValueError("embedding base_url/api_key 未配置，拒绝发起请求")
+
     from openai import OpenAI
 
     client = OpenAI(
@@ -132,18 +139,37 @@ def _embedding_health(
 
     云端失败必定落日志（仅原因摘要，不含凭据）。本函数不抛异常，整体
     健康检查因此仍能返回 HTTP 200，由 ``data.status=degraded`` 表达降级。
+
+    云端配置不全（base_url / api_key / model 任一为空）时**直接判为云端
+    不可用且不发请求**：``OpenAI(base_url="")`` 会隐式回落到官方端点并把
+    api_key 外发，属于凭据泄漏风险，必须在入口短路。
     """
-    try:
-        _embedding_ping(cloud_base_url, cloud_api_key, cloud_model, _EMBEDDING_TIMEOUT_S)
-    except Exception as exc:
-        current_app.logger.warning("embedding 探活失败（云端不可用）: %s", _summarize(exc))
+    missing = [
+        name
+        for name, value in (
+            ("EMBEDDING_BASE_URL", cloud_base_url),
+            ("EMBEDDING_API_KEY", cloud_api_key),
+            ("EMBEDDING_MODEL", cloud_model),
+        )
+        if not (value or "").strip()
+    ]
+    if missing:
+        # 只报变量名，绝不回显取值（可能含凭据）
+        current_app.logger.warning(
+            "embedding 云端配置不完整（%s 为空），跳过云端探活", ", ".join(missing)
+        )
     else:
-        return {"mode": "cloud", "model": cloud_model, "dim": dim, "status": "up"}
+        try:
+            _embedding_ping(cloud_base_url, cloud_api_key, cloud_model, _EMBEDDING_TIMEOUT_S)
+        except Exception as exc:
+            current_app.logger.warning("embedding 探活失败（云端不可用）: %s", _summarize(exc))
+        else:
+            return {"mode": "cloud", "model": cloud_model, "dim": dim, "status": "up"}
 
     if not local_enabled:
         current_app.logger.warning("embedding 本地兜底已禁用（EMBEDDING_LOCAL_ENABLED=false）")
         return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
-    if not local_base_url or not local_model:
+    if not (local_base_url or "").strip() or not (local_model or "").strip():
         current_app.logger.warning("embedding 本地兜底配置缺失（base_url/model 为空）")
         return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
 
