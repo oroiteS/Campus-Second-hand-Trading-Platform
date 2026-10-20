@@ -81,10 +81,14 @@ def _ping_redis(host: str, port: int, password: str) -> None:
 
 
 def _ping_chroma(host: str, port: int) -> None:
+    # chromadb-client 1.5.9 的 HttpClient 无 timeout 参数，_PROBE_TIMEOUT_S 对其
+    # 不生效（走 httpx 默认 5s 超时）；且构造内部会同步完成一次 get_user_identity
+    # 真实往返，故构造成功即视为探活成功（耗时由 _service_probe 统一计时上报），
+    # 不再额外调用 heartbeat() 造成第二次往返。超时统一问题待 chromadb-client
+    # 支持 timeout 参数后跟进，不在本次范围。
     import chromadb
 
-    client = chromadb.HttpClient(host=host, port=port)
-    client.heartbeat()
+    chromadb.HttpClient(host=host, port=port)
 
 
 def _embedding_health(base_url: str, api_key: str, model: str, dim: int) -> dict:
