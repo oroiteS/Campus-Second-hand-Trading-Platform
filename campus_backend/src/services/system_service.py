@@ -4,6 +4,8 @@
 替换；本模块不返回任何 Flask Response。
 """
 
+import ipaddress
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,8 +30,6 @@ _EMBEDDING_TIMEOUT_S = 5.0
 _EMBEDDING_LOCAL_TIMEOUT_S = 15.0
 # EMBEDDING_MODE 合法取值；config.py 已校验并回退，这里做服务层兜底校验。
 _EMBEDDING_MODES = ("local", "cloud", "auto")
-# 视为「本机侧车」的主机名：这类地址必须直连，不能被系统代理劫持。
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 _ERROR_SUMMARY_MAX = 200
 
 
@@ -100,12 +100,44 @@ def _ping_chroma(host: str, port: int) -> None:
 
 
 def _is_loopback(base_url: str) -> bool:
-    """判断 base_url 是否指向本机回环地址（本地侧车专用判断）。"""
+    """判断 base_url 是否指向本机回环地址（本地侧车专用判断）。
+
+    覆盖完整回环语义，不靠字符串白名单：
+
+    - IPv4 ``127.0.0.0/8`` 任意地址（含 ``127.0.0.2``），以及 ``inet_aton``
+      能解析的简写（``127.1``）；
+    - IPv6 ``::1`` 与 IPv4-mapped ``::ffff:127.0.0.1``；
+    - 主机名 ``localhost`` / ``localhost.``（大小写不敏感，尾点是合法 DNS 写法）。
+
+    ``0.0.0.0`` 语义上是「未指定地址」而非回环，但对本机监听端口的连通性
+    等价（连 ``0.0.0.0:8010`` 即连本机 8010），侧车配成它时同样必须直连，
+    故**有意列入**。
+    """
     try:
         host = urlparse(base_url).hostname or ""
     except ValueError:
         return False
-    return host in _LOOPBACK_HOSTS
+    if not host:
+        return False
+
+    if host.lower().rstrip(".") == "localhost":
+        return True
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # 非标准点分写法（如 127.1）交给 inet_aton 兼容解析
+        try:
+            packed = socket.inet_aton(host)
+        except OSError:
+            return False
+        return packed[0] == 127
+
+    if address.is_unspecified:  # 0.0.0.0 / ::
+        return True
+    if address.version == 6 and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
 
 
 def _embedding_ping(base_url: str, api_key: str, model: str, timeout_s: float) -> None:

@@ -68,7 +68,7 @@ def _health(
     local_enabled: bool = True,
     local_url: str | None = None,
     local_model: str | None = None,
-    mode: str = "auto",
+    mode: str,
     cloud_base_url: str | None = None,
     cloud_api_key: str | None = None,
     cloud_model: str | None = None,
@@ -123,7 +123,7 @@ class TestDualModeMapping:
     """四条分支的契约映射（关键用例：云端失败 + 本地成功 → mode=local）。"""
 
     def test_cloud_up_reports_cloud_and_skips_local(self, dual_app):
-        out = _health(dual_app, cloud_ok=True, local_ok=True)
+        out = _health(dual_app, cloud_ok=True, local_ok=True, mode="auto")
         assert out["result"] == {
             "mode": "cloud",
             "model": _DualModeConfig.EMBEDDING_MODEL,
@@ -135,7 +135,7 @@ class TestDualModeMapping:
         assert out["calls"][0]["timeout_s"] == system_service._EMBEDDING_TIMEOUT_S == 5.0
 
     def test_cloud_down_local_up_reports_local(self, dual_app):
-        out = _health(dual_app, cloud_ok=False, local_ok=True)
+        out = _health(dual_app, cloud_ok=False, local_ok=True, mode="auto")
         assert out["result"] == {
             "mode": "local",
             "model": _DualModeConfig.EMBEDDING_LOCAL_MODEL,
@@ -149,7 +149,7 @@ class TestDualModeMapping:
         assert out["calls"][1]["model"] == _DualModeConfig.EMBEDDING_LOCAL_MODEL
 
     def test_both_down_reports_null_mode(self, dual_app):
-        out = _health(dual_app, cloud_ok=False, local_ok=False)
+        out = _health(dual_app, cloud_ok=False, local_ok=False, mode="auto")
         assert out["result"] == {
             "mode": None,
             "model": _DualModeConfig.EMBEDDING_MODEL,
@@ -159,7 +159,7 @@ class TestDualModeMapping:
         assert len(out["calls"]) == 2
 
     def test_local_disabled_short_circuits_to_down(self, dual_app):
-        out = _health(dual_app, cloud_ok=False, local_ok=True, local_enabled=False)
+        out = _health(dual_app, cloud_ok=False, local_ok=True, local_enabled=False, mode="auto")
         assert out["result"] == {
             "mode": None,
             "model": _DualModeConfig.EMBEDDING_MODEL,
@@ -170,14 +170,16 @@ class TestDualModeMapping:
         assert [call["base_url"] for call in out["calls"]] == [_DualModeConfig.EMBEDDING_BASE_URL]
 
     def test_missing_local_config_treated_as_down(self, dual_app):
-        out = _health(dual_app, cloud_ok=False, local_ok=True, local_url="", local_model="")
+        out = _health(
+            dual_app, cloud_ok=False, local_ok=True, local_url="", local_model="", mode="auto"
+        )
         assert out["result"]["mode"] is None
         assert out["result"]["status"] == "down"
 
     def test_cloud_failure_is_logged_without_secret(self, dual_app, caplog):
         secret = _DualModeConfig.EMBEDDING_API_KEY
         with caplog.at_level("WARNING"):
-            _health(dual_app, cloud_ok=False, local_ok=True)
+            _health(dual_app, cloud_ok=False, local_ok=True, mode="auto")
         messages = " ".join(record.getMessage() for record in caplog.records)
         assert "云端不可用" in messages
         assert secret not in messages
@@ -451,6 +453,30 @@ class TestLocalMode:
         messages = " ".join(record.getMessage() for record in caplog.records)
         assert "EMBEDDING_BASE_URL" not in messages, "local 模式不读云端配置，不应报警"
 
+    def test_local_missing_config_reports_local_model(self, dual_app, caplog):
+        """本地配置缺失分支：mode=null 但 model 必须是**本地模型名**。
+
+        与异常分支（侧车不可达）互为补充：变异成 ``_embedding_down("", …)``
+        或误报云端模型名时这里必须 FAIL。
+        """
+        with caplog.at_level("WARNING"):
+            out = _health(dual_app, cloud_ok=True, local_ok=True, local_url="", mode="local")
+        assert out["result"] == {
+            "mode": None,
+            "model": _DualModeConfig.EMBEDDING_LOCAL_MODEL,
+            "dim": 1024,
+            "status": "down",
+        }
+        assert out["calls"] == [], "配置缺失时不应发起任何请求"
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "本地侧车配置缺失" in messages
+
+    def test_local_missing_local_model_reports_empty_local_model(self, dual_app):
+        """只缺 local_model 时同样短路，且 model 如实回显空值（不是云端名）。"""
+        out = _health(dual_app, cloud_ok=True, local_ok=True, local_model="", mode="local")
+        assert out["result"] == {"mode": None, "model": "", "dim": 1024, "status": "down"}
+        assert out["calls"] == []
+
     def test_local_mode_ignores_local_enabled_flag(self, dual_app):
         """local 模式是显式选择，不受 EMBEDDING_LOCAL_ENABLED 影响。"""
         out = _health(dual_app, cloud_ok=False, local_ok=True, local_enabled=False, mode="local")
@@ -564,6 +590,52 @@ class TestAutoMode:
         assert out["result"]["mode"] == "local"
 
 
+class TestShippedDefaultMode:
+    """出厂默认值：未设置 EMBEDDING_MODE 时必须取 local（零云端外发）。"""
+
+    def test_shipped_default_mode_is_local(self, monkeypatch):
+        """变异（默认值 local→auto/cloud）必须在此 FAIL。"""
+        from src import config as config_module
+
+        monkeypatch.delenv("EMBEDDING_MODE", raising=False)
+        assert config_module._env_choice("EMBEDDING_MODE", "local", ("local", "cloud", "auto")) == (
+            "local"
+        )
+
+    def test_config_class_default_is_local(self, monkeypatch):
+        """Config.EMBEDDING_MODE 的出厂值同样是 local（类属性级断言）。"""
+        from src.config import Config
+
+        assert Config.EMBEDDING_MODE == "local"
+
+    def test_service_layer_default_mode_is_local(self):
+        """service 层缺省值也是 local：漏传 mode 时绝不外发云端。"""
+        import inspect
+
+        default = inspect.signature(_embedding_health).parameters["mode"].default
+        assert default == "local"
+
+    def test_default_probes_local_without_cloud_request(self, monkeypatch):
+        """端到端默认路径：不设 EMBEDDING_MODE 时配置解析 → 探针只打本地。"""
+        from src.app import create_app
+        from src.config import Config
+
+        monkeypatch.delenv("EMBEDDING_MODE", raising=False)
+        # 仅替换「读的是哪个环境变量」，保证拿到的是未设置时的默认值
+        app = create_app(type("_Default", (Config,), {"TESTING": True}))
+        stub = _StubPing()
+        monkeypatch.setattr(system_service, "_embedding_ping", stub)
+        with app.app_context():
+            result = system_service.build_default_probes().embedding()
+        assert result == {
+            "mode": "local",
+            "model": Config.EMBEDDING_LOCAL_MODEL,
+            "dim": Config.EMBEDDING_DIM,
+            "status": "up",
+        }
+        assert [call["base_url"] for call in stub.calls] == [Config.EMBEDDING_LOCAL_BASE_URL]
+
+
 class TestModeValidation:
     """EMBEDDING_MODE 非法取值 → 回退 local 并落 WARNING。"""
 
@@ -583,13 +655,16 @@ class TestModeValidation:
         assert out["result"]["mode"] == expected
         assert _cloud_calls(out["calls"]) == []
 
+    # 行内注释用例必须是**非默认值**：若取 "local # 默认"，剥注释逻辑被删掉时
+    # 会因非法而回退默认值 local，断言恒真（空断言）。用 cloud/auto 才能钉住。
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
             ("local", "local"),
             ("cloud", "cloud"),
             ("auto", "auto"),
-            ("local # 默认", "local"),
+            ("cloud # 切云端", "cloud"),
+            ("auto # 云端优先+本地兜底", "auto"),
             ("CLOUD", "cloud"),
         ],
     )
@@ -643,10 +718,21 @@ class TestLocalSidecarDirectConnection:
     @pytest.mark.parametrize(
         ("url", "expected"),
         [
+            # ---- 回环（必须直连）----
             ("http://127.0.0.1:8010/v1", True),
+            ("http://127.0.0.2:8010/v1", True),  # 127/8 其他地址
+            ("http://127.1:8010/v1", True),  # inet_aton 简写
             ("http://localhost:8010/v1", True),
+            ("http://LOCALHOST:8010/v1", True),  # 大小写
+            ("http://localhost.:8010/v1", True),  # 尾点
             ("http://[::1]:8010/v1", True),
+            ("http://[::ffff:127.0.0.1]:8010/v1", True),  # IPv4-mapped
+            ("http://0.0.0.0:8010/v1", True),  # 有意列入：本机监听等价
+            # ---- 非回环（保持系统代理）----
             ("https://maas.example.com/v1", False),
+            ("http://172.20.10.5:8010/v1", False),  # docker / 局域网地址
+            ("http://host.docker.internal:8010/v1", False),  # macOS 容器宿主别名
+            ("http://127.0.0.1.nip.io:8010/v1", False),  # 解析到回环但不是字面回环
             ("", False),
             ("not-a-url", False),
         ],
