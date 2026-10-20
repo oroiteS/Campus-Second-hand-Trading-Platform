@@ -4,11 +4,14 @@
 替换；本模块不返回任何 Flask Response。
 """
 
+import ipaddress
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 from flask import current_app
@@ -25,6 +28,8 @@ _PROBE_TIMEOUT_S = 3.0
 # 权重换页，但侧车启动时已预热，稳态毫秒级；超时只用于防止挂死）
 _EMBEDDING_TIMEOUT_S = 5.0
 _EMBEDDING_LOCAL_TIMEOUT_S = 15.0
+# EMBEDDING_MODE 合法取值；config.py 已校验并回退，这里做服务层兜底校验。
+_EMBEDDING_MODES = ("local", "cloud", "auto")
 _ERROR_SUMMARY_MAX = 200
 
 
@@ -94,6 +99,47 @@ def _ping_chroma(host: str, port: int) -> None:
     chromadb.HttpClient(host=host, port=port)
 
 
+def _is_loopback(base_url: str) -> bool:
+    """判断 base_url 是否指向本机回环地址（本地侧车专用判断）。
+
+    覆盖完整回环语义，不靠字符串白名单：
+
+    - IPv4 ``127.0.0.0/8`` 任意地址（含 ``127.0.0.2``），以及 ``inet_aton``
+      能解析的简写（``127.1``）；
+    - IPv6 ``::1`` 与 IPv4-mapped ``::ffff:127.0.0.1``；
+    - 主机名 ``localhost`` / ``localhost.``（大小写不敏感，尾点是合法 DNS 写法）。
+
+    ``0.0.0.0`` 语义上是「未指定地址」而非回环，但对本机监听端口的连通性
+    等价（连 ``0.0.0.0:8010`` 即连本机 8010），侧车配成它时同样必须直连，
+    故**有意列入**。
+    """
+    try:
+        host = urlparse(base_url).hostname or ""
+    except ValueError:
+        return False
+    if not host:
+        return False
+
+    if host.lower().rstrip(".") == "localhost":
+        return True
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # 非标准点分写法（如 127.1）交给 inet_aton 兼容解析
+        try:
+            packed = socket.inet_aton(host)
+        except OSError:
+            return False
+        return packed[0] == 127
+
+    if address.is_unspecified:  # 0.0.0.0 / ::
+        return True
+    if address.version == 6 and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
 def _embedding_ping(base_url: str, api_key: str, model: str, timeout_s: float) -> None:
     """向 OpenAI 兼容端点真实发一次向量化请求（失败抛异常）。
 
@@ -103,46 +149,50 @@ def _embedding_ping(base_url: str, api_key: str, model: str, timeout_s: float) -
     入口再做一次兜底校验：``OpenAI(base_url="")`` 会回落到官方
     ``https://api.openai.com/v1``，若此时 api_key 非空，凭据就会被发到境外
     端点。调用方已提前判空，这里再加一道防线（防御未来新调用点）。
+
+    回环地址（本地侧车）**强制直连、不经系统代理**：macOS 开启全局代理
+    （如 Clash）后 ``httpx`` 会读系统代理设置，连 ``127.0.0.1:8010`` 也绕去
+    代理——侧车已停时代理会返回 502 并耗时数秒，把「本地探活」这个纯本机
+    动作变成对外依赖，也让 ``mode=local`` 模式的耗时不再可控。
     """
     if not base_url or not api_key:
         raise ValueError("embedding base_url/api_key 未配置，拒绝发起请求")
 
-    from openai import OpenAI
+    from openai import DefaultHttpxClient, OpenAI
 
-    client = OpenAI(
-        base_url=base_url,
-        api_key=api_key,
-        timeout=timeout_s,
-        max_retries=0,
+    direct = _is_loopback(base_url)
+    # DefaultHttpxClient 是 openai SDK 自带的 httpx 子类，能确保它与 SDK
+    # 内部的 httpx 版本一致（SDK 3.x 已切到 httpx2，混用外部 httpx.Client
+    # 有版本错配风险）。
+    http_client = (
+        DefaultHttpxClient(trust_env=False, timeout=timeout_s) if direct else None
     )
-    client.embeddings.create(input=["ping"], model=model)
+    try:
+        client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout_s,
+            max_retries=0,
+            http_client=http_client,
+        )
+        client.embeddings.create(input=["ping"], model=model)
+    finally:
+        if http_client is not None:
+            http_client.close()
 
 
-def _embedding_health(
-    *,
-    cloud_base_url: str,
-    cloud_api_key: str,
-    cloud_model: str,
-    dim: int,
-    local_base_url: str = "",
-    local_model: str = "",
-    local_enabled: bool = False,
-) -> dict:
-    """Embedding 双模探活（云端优先、本地兜底），返回契约 EmbeddingHealth。
+def _embedding_down(model: str, dim: int) -> dict:
+    """Embedding 不可用时的契约结构（``mode`` 必须为 null，不得报 cloud/local）。"""
+    return {"mode": None, "model": model, "dim": dim, "status": "down"}
 
-    判定顺序与映射（契约硬规则，不得偏离）：
 
-    1. 云端可用 → ``mode=cloud, model=云端模型, dim, status=up``；
-    2. 云端不可用且本地兜底启用 + 本地可用 →
-       ``mode=local, model=本地模型, dim, status=up``；
-    3. 都不可用 → ``mode=None, model=云端模型, dim, status=down``。
+def _probe_cloud(
+    *, cloud_base_url: str, cloud_api_key: str, cloud_model: str, dim: int
+) -> dict | None:
+    """探测云端 OpenAI 兼容端点；不可用（或配置不全）返回 None。
 
-    云端失败必定落日志（仅原因摘要，不含凭据）。本函数不抛异常，整体
-    健康检查因此仍能返回 HTTP 200，由 ``data.status=degraded`` 表达降级。
-
-    云端配置不全（base_url / api_key / model 任一为空）时**直接判为云端
-    不可用且不发请求**：``OpenAI(base_url="")`` 会隐式回落到官方端点并把
-    api_key 外发，属于凭据泄漏风险，必须在入口短路。
+    配置不全时**直接跳过且不发请求**：``OpenAI(base_url="")`` 会隐式回落到
+    官方 ``https://api.openai.com/v1``，若 api_key 非空则凭据外泄。
     """
     missing = [
         name
@@ -158,29 +208,89 @@ def _embedding_health(
         current_app.logger.warning(
             "embedding 云端配置不完整（%s 为空），跳过云端探活", ", ".join(missing)
         )
-    else:
-        try:
-            _embedding_ping(cloud_base_url, cloud_api_key, cloud_model, _EMBEDDING_TIMEOUT_S)
-        except Exception as exc:
-            current_app.logger.warning("embedding 探活失败（云端不可用）: %s", _summarize(exc))
-        else:
-            return {"mode": "cloud", "model": cloud_model, "dim": dim, "status": "up"}
+        return None
+    try:
+        _embedding_ping(cloud_base_url, cloud_api_key, cloud_model, _EMBEDDING_TIMEOUT_S)
+    except Exception as exc:
+        current_app.logger.warning("embedding 探活失败（云端不可用）: %s", _summarize(exc))
+        return None
+    return {"mode": "cloud", "model": cloud_model, "dim": dim, "status": "up"}
 
-    if not local_enabled:
-        current_app.logger.warning("embedding 本地兜底已禁用（EMBEDDING_LOCAL_ENABLED=false）")
-        return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
+
+def _probe_local(*, local_base_url: str, local_model: str, dim: int) -> dict:
+    """探测本地侧车；失败时 ``model`` 报**本地模型名**（云端不参与）。"""
     if not (local_base_url or "").strip() or not (local_model or "").strip():
-        current_app.logger.warning("embedding 本地兜底配置缺失（base_url/model 为空）")
-        return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
-
+        current_app.logger.warning("embedding 本地侧车配置缺失（base_url/model 为空）")
+        return _embedding_down(local_model, dim)
     try:
         # 本地侧车不校验 api_key，但 OpenAI 客户端要求非空，给占位值
         _embedding_ping(local_base_url, "local", local_model, _EMBEDDING_LOCAL_TIMEOUT_S)
     except Exception as exc:
-        current_app.logger.warning("embedding 探活失败（本地兜底不可用）: %s", _summarize(exc))
-        return {"mode": None, "model": cloud_model, "dim": dim, "status": "down"}
-    current_app.logger.info("embedding 已降级到本地侧车：%s", local_base_url)
+        current_app.logger.warning("embedding 探活失败（本地侧车不可用）: %s", _summarize(exc))
+        return _embedding_down(local_model, dim)
     return {"mode": "local", "model": local_model, "dim": dim, "status": "up"}
+
+
+def _embedding_health(
+    *,
+    cloud_base_url: str,
+    cloud_api_key: str,
+    cloud_model: str,
+    dim: int,
+    local_base_url: str = "",
+    local_model: str = "",
+    local_enabled: bool = False,
+    mode: str = "local",
+) -> dict:
+    """Embedding 探活，按 ``EMBEDDING_MODE`` 分派策略，返回契约 EmbeddingHealth。
+
+    三种模式（``mode`` 参数，由 ``app.config["EMBEDDING_MODE"]`` 传入；缺省
+    取 ``local``——宁可只探本地，也不允许意外外发请求）：
+
+    - ``local``：**只探本地侧车，绝不发起任何云端请求**（零外发、零 5s 等待）。
+      成功 ``mode=local``；失败 ``mode=null`` 且 ``model`` 报本地模型名。
+    - ``cloud``：只探云端，失败直接 ``mode=null``（不回落本地），``model``
+      报云端模型名。
+    - ``auto``：旧行为——云端优先、本地兜底：云端可用 → ``mode=cloud``；
+      否则若 ``local_enabled`` 且本地可用 → ``mode=local``；都失败 →
+      ``mode=null, model=云端模型``。
+
+    ``mode`` 取值非法时按 ``local`` 处理并落 WARNING。
+
+    云端失败必定落日志（仅原因摘要，不含凭据）。本函数不抛异常，整体
+    健康检查因此仍能返回 HTTP 200，由 ``data.status=degraded`` 表达降级。
+    云端配置不全（base_url / api_key / model 任一为空）时在 ``auto`` /
+    ``cloud`` 下均**直接判为云端不可用且不发请求**（安全短路）。
+    """
+    normalized = (mode or "").strip().lower()
+    if normalized not in _EMBEDDING_MODES:
+        current_app.logger.warning("EMBEDDING_MODE 取值非法（%r），按 local 处理", mode)
+        normalized = "local"
+
+    if normalized == "local":
+        return _probe_local(local_base_url=local_base_url, local_model=local_model, dim=dim)
+
+    cloud = _probe_cloud(
+        cloud_base_url=cloud_base_url,
+        cloud_api_key=cloud_api_key,
+        cloud_model=cloud_model,
+        dim=dim,
+    )
+    if cloud is not None:
+        return cloud
+    if normalized == "cloud":
+        return _embedding_down(cloud_model, dim)
+
+    # ---- auto：云端不可用 → 本地兜底 ----
+    if not local_enabled:
+        current_app.logger.warning("embedding 本地兜底已禁用（EMBEDDING_LOCAL_ENABLED=false）")
+        return _embedding_down(cloud_model, dim)
+    local = _probe_local(local_base_url=local_base_url, local_model=local_model, dim=dim)
+    if local["status"] == "down":
+        # 双失败：契约沿用云端模型名（本地也没真正接管）
+        return _embedding_down(cloud_model, dim)
+    current_app.logger.info("embedding 已降级到本地侧车：%s", local_base_url)
+    return local
 
 
 @dataclass(frozen=True)
@@ -225,6 +335,8 @@ def build_default_probes() -> HealthProbes:
             local_base_url=config.get("EMBEDDING_LOCAL_BASE_URL", ""),
             local_model=config.get("EMBEDDING_LOCAL_MODEL", ""),
             local_enabled=config.get("EMBEDDING_LOCAL_ENABLED", False),
+            # 缺省 local：未配置该键的老配置也绝不外发云端请求
+            mode=config.get("EMBEDDING_MODE", "local"),
         )
 
     return HealthProbes(
