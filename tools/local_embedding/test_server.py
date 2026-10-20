@@ -15,8 +15,10 @@
 3. **模型层（需 torch + transformers + 本地模型）**：
    - 单条 / 等长批量（无 padding）/ 混合批量（有 padding）**三方一致性**；
    - 长度覆盖 **≥17 / ≥24 / ≥32 token**（历史 MPS SDPA bug 的触发区间）；
-   - query 前缀路径（22 token 前缀，必然走长序列）；
-   - **CPU fp32 外部基准对照**（任何设备/内核回归都能被抓到）；
+   - query 前缀路径（27 token，必然走长序列）+ **文本层**前缀断言
+     （spy 送入模型的文本：前缀内容逐字、位置在前、query/document 归属）；
+   - **同实现跨设备/精度对照**（MPS vs CPU fp32，防设备相关内核 bug）与
+     **独立参考实现对照**（手写 last-token + L2，防池化/归一化算法错误）；
    - 中文语义近似度与检索排序。
 4. **端到端**：真模型 + 真实 HTTP 往返（含 keep-alive 与 /v1/models）。
 
@@ -45,7 +47,7 @@ FAILED: list[str] = []
 
 # 三方一致性阈值：单条 / 等长批量 / 混合批量 两两 cosine 下限
 CONSISTENCY_MIN_COS = 0.99
-# CPU fp32 基准对照阈值
+# 跨设备/跨精度对照阈值（MPS 结果 vs 同实现 CPU fp32 结果）
 BASELINE_MIN_COS = 0.99
 
 # 商品标题风格的中文语料（长度覆盖用；真实商品数据长得就是这些样子）
@@ -554,6 +556,30 @@ def _token_len(tokenizer, text: str) -> int:
     return len(tokenizer(text, add_special_tokens=True)["input_ids"])
 
 
+def _capture_prepared(embedder, texts: list[str], input_type: str) -> list[str]:
+    """spy ``LocalEmbedder._run_batches``，返回真正送入模型的文本列表。
+
+    这是 P3-1 的关键手段：只断言「向量不同 / 长度够」属于**结果层**观察，
+    无法区分"前缀写错但仍是另一个不同的长串"；只有拿到送给 tokenizer 的
+    原文，才能在**文本层**逐字验证前缀内容、位置与 query/document 归属。
+
+    spy 只记录入参并原样转发，不改变推理行为；异常路径用 finally 复原。
+    """
+    captured: list[str] = []
+    original = embedder._run_batches
+
+    def spy(prepared: list[str]):
+        captured.extend(prepared)
+        return original(prepared)
+
+    embedder._run_batches = spy
+    try:
+        embedder.embed(texts, input_type)
+    finally:
+        embedder._run_batches = original
+    return captured
+
+
 def test_model() -> None:
     print("\n[3/4] 模型层（真实 Qwen3-Embedding-0.6B）")
     torch = _load_torch()
@@ -663,10 +689,14 @@ def test_model() -> None:
         )
     print("    长度覆盖组最低 cosine：" + f"{min(varied_sims):.6f}")
 
-    # ---- 外部基准：CPU fp32 同进程对照（同一批 mixed_texts，含 padding）----
+    # ---- 跨设备/跨精度对照：同实现跑 CPU fp32（同一批 mixed_texts，含 padding）----
+    # 定位说明（P3-2，避免夸大）：这是 **同一个 LocalEmbedder 实现**，仅切换
+    # device/dtype，因此它只能捕获"设备或精度相关的内核 bug"（如 MPS bf16
+    # SDPA 算错），**不能**发现池化索引、归一化方向这类算法逻辑错误——
+    # 后者由下方"独立参考实现"与内核自检的手算基准负责。
     cpu_embedder = sidecar.LocalEmbedder(model_dir, device="cpu", batch_size=8)
     if not cpu_embedder.load():
-        skip("CPU fp32 基准对照", str(cpu_embedder.error))
+        skip("跨设备/跨精度对照", str(cpu_embedder.error))
     else:
         cpu_vectors = cpu_embedder.embed(mixed_texts).vectors
         device_vectors = embedder.embed(mixed_texts).vectors
@@ -675,11 +705,11 @@ def test_model() -> None:
             for device_vec, cpu_vec in zip(device_vectors, cpu_vectors, strict=True)
         ]
         check(
-            f"{embedder.device}/{embedder.dtype_name} vs CPU fp32 基准 cosine ≥ 0.99",
+            f"{embedder.device}/{embedder.dtype_name} vs 同实现 CPU fp32 cosine ≥ 0.99",
             min(baseline_sims) >= BASELINE_MIN_COS,
             f"最低 {min(baseline_sims):.6f}",
         )
-        print(f"    设备 vs CPU fp32 基准最低 cosine：{min(baseline_sims):.6f}")
+        print(f"    设备 vs 同实现 CPU fp32 最低 cosine：{min(baseline_sims):.6f}")
 
     # ---- 批量内所有向量归一化 + 维度 ----
     all_vectors = equal_batch + mixed_batch
@@ -696,8 +726,102 @@ def test_model() -> None:
     )
     check("所有分量为有限值", all(math.isfinite(x) for v in all_vectors for x in v))
 
-    # ---- query 前缀路径（22 token 前缀 → 必然长序列）----
+    # ---- query 前缀：文本层断言（P3-1 补盲区）----
+    # 光有「query≠document 向量」「前缀长度」这类**结果层**断言，抓不到
+    # 「前缀被换成短错串 / 拼到文本之后 / query 与 document 互换」——
+    # 三者都能让向量变得"不同且够长"，测试照样全绿。所以必须 spy 真正送入
+    # 模型的文本（_run_batches 的入参），在**文本层**逐字断言。
+    prompts_path = model_dir / "config_sentence_transformers.json"
+    prompts_json = json.loads(prompts_path.read_text(encoding="utf-8")).get("prompts") or {}
+    check(
+        "query_prefix 与模型 config_sentence_transformers.json 的 prompts.query 逐字一致",
+        embedder.query_prefix == prompts_json.get("query"),
+        f"实际 {embedder.query_prefix!r} vs 期望 {prompts_json.get('query')!r}",
+    )
+    check(
+        "query_prefix 非空且含 Instruct/Query 结构",
+        bool(embedder.query_prefix)
+        and "Instruct:" in embedder.query_prefix
+        and embedder.query_prefix.rstrip().endswith("Query:"),
+        repr(embedder.query_prefix),
+    )
+    check(
+        "document_prefix 与 prompts.document 逐字一致",
+        embedder.document_prefix == (prompts_json.get("document") or ""),
+        repr(embedder.document_prefix),
+    )
+
     query_text = "想买个便宜的机械键盘"
+    query_prepared = _capture_prepared(embedder, [query_text], "query")
+    doc_prepared = _capture_prepared(embedder, [query_text], "document")
+    check("spy 抓到 query 路径的送模型文本", len(query_prepared) == 1, str(query_prepared))
+    check(
+        "query 送模型文本 == query_prefix + 原文（前缀在前、逐字拼接）",
+        query_prepared[0] == embedder.query_prefix + query_text,
+        f"实际 {query_prepared[0]!r}",
+    )
+    check(
+        "query 送模型文本以 query_prefix 开头",
+        query_prepared[0].startswith(embedder.query_prefix),
+        repr(query_prepared[0][:60]),
+    )
+    check(
+        "query 送模型文本不以 query_prefix 结尾（排除后置拼接）",
+        not query_prepared[0].endswith(embedder.query_prefix),
+        repr(query_prepared[0][-60:]),
+    )
+    check(
+        "query 送模型文本中前缀只出现一次",
+        query_prepared[0].count(embedder.query_prefix) == 1,
+        str(query_prepared[0].count(embedder.query_prefix)),
+    )
+    check(
+        "document 送模型文本不带 query 前缀",
+        not doc_prepared[0].startswith(embedder.query_prefix),
+        repr(doc_prepared[0][:60]),
+    )
+    check(
+        "query 送模型文本 != document 送模型文本（路径确实不同）",
+        query_prepared[0] != doc_prepared[0],
+        "两者相同",
+    )
+
+    # 哨兵前缀：把两个前缀临时换成可区分的标记，验证「query 取 query_prefix、
+    # document 取 document_prefix」的选择逻辑本身（不依赖模型 json 里
+    # document 恰为空——本例 document_prefix 就是 ""，光看真实配置会漏掉
+    # 「document 也用了 query 前缀」这类错误）。
+    original_query_prefix, original_doc_prefix = embedder.query_prefix, embedder.document_prefix
+    sentinel_query, sentinel_doc = "[[Q-SENTINEL]]", "[[D-SENTINEL]]"
+    try:
+        embedder.query_prefix = sentinel_query
+        embedder.document_prefix = sentinel_doc
+        sentinel_q = _capture_prepared(embedder, ["文本"], "query")
+        sentinel_d = _capture_prepared(embedder, ["文本"], "document")
+    finally:
+        embedder.query_prefix = original_query_prefix
+        embedder.document_prefix = original_doc_prefix
+    check(
+        "query 路径取 query_prefix（哨兵验证）",
+        sentinel_q[0] == sentinel_query + "文本",
+        repr(sentinel_q[0]),
+    )
+    check(
+        "document 路径取 document_prefix（哨兵验证）",
+        sentinel_d[0] == sentinel_doc + "文本",
+        repr(sentinel_d[0]),
+    )
+    check(
+        "两个前缀未互换（哨兵验证）",
+        not sentinel_q[0].startswith(sentinel_doc) and not sentinel_d[0].startswith(sentinel_query),
+        f"query={sentinel_q[0]!r} document={sentinel_d[0]!r}",
+    )
+    check(
+        "探针后前缀已复原",
+        embedder.query_prefix == original_query_prefix
+        and embedder.document_prefix == original_doc_prefix,
+        "前缀未复原",
+    )
+
     query_vec = embedder.embed([query_text], "query").vectors[0]
     doc_vec = embedder.embed([query_text], "document").vectors[0]
     query_doc_sim = cosine(query_vec, doc_vec)
@@ -720,6 +844,32 @@ def test_model() -> None:
         prefix_len >= 24,
         str(prefix_len),
     )
+
+    # ---- 池化/归一化的独立参考实现（P3-2：这才是真正的独立实现对照）----
+    # 不复用 LocalEmbedder._run_batches，而是直接 forward + 逐条取末 token +
+    # 手写 L2 归一化，与 embedder.embed 的结果比对，隔离「池化索引/归一化」
+    # 这类算法逻辑错误（CPU fp32 对照只能防设备内核 bug）。
+    ref_sims = []
+    with torch.inference_mode():
+        for text in equal_texts:
+            encoded = embedder._tokenizer(
+                [text], padding=False, truncation=True, max_length=512, return_tensors="pt"
+            )
+            encoded = {key: value.to(embedder.device) for key, value in encoded.items()}
+            output = embedder._model(**encoded)
+            hidden = output.last_hidden_state
+            mask = encoded["attention_mask"][0]
+            last_valid = int(mask.nonzero()[-1].item())  # 显式定位最后一个有效 token
+            pooled = hidden[0, last_valid].float()
+            norm = pooled.norm(p=2)
+            reference = (pooled / norm).detach().to("cpu").tolist()
+            ref_sims.append(cosine(reference, embedder.embed([text]).vectors[0]))
+    check(
+        "独立参考实现（手写 last-token + L2）与 embed 结果 cosine ≥ 0.999",
+        min(ref_sims) >= 0.999,
+        f"最低 {min(ref_sims):.6f}",
+    )
+    print(f"    独立参考实现最低 cosine：{min(ref_sims):.6f}")
 
     # ---- 检索排序：query 应把同主题文档排在前面 ----
     docs = [

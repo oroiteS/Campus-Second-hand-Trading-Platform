@@ -245,7 +245,7 @@ cd tools/local_embedding
 ~/my/torch_python/.venv/bin/python test_server.py
 ```
 
-四层，共 90+ 项断言：
+四层，共 100+ 项断言：
 
 1. **协议层**（假 embedder，无需 torch）：`/health`、`/v1/models`、
    `/v1/embeddings` 的字段/错误码/OpenAI 结构；**keep-alive 串包回归**
@@ -253,11 +253,45 @@ cd tools/local_embedding
 2. **内核自检层**：生产配置必须 `ok`、CPU fp32 必须 rel_err=0；再用代理 shim
    把 SDPA 换成“输出全零”的坏内核，验证自检确实能报 `failed`。
 3. **模型层**：三方一致性（单条 / 等长批量无 padding / 混合批量有 padding，
-   两两 cosine ≥ 0.99）、长度覆盖 **17 / 24 / 32 token**、query 前缀路径
-   （27 token）、**CPU fp32 基准对照**（cosine ≥ 0.99）、检索排序。
+   两两 cosine ≥ 0.99）、长度覆盖 **17 / 24 / 32 token**、query 前缀
+   **文本层断言**（见下）、跨设备/精度对照、独立参考实现对照、检索排序。
 4. **端到端**：真模型 + 真 HTTP，含 `/v1/models` 与 keep-alive 复用。
 
 缺依赖时打印 SKIP 并以退出码 0 结束（不算失败），断言失败退出码 1。
+
+### 三种「对照」的分工（别混淆）
+
+不同手段能抓的缺陷类别不同，测试文件里刻意分开并注明：
+
+| 手段 | 对照对象 | 能抓的缺陷 | 抓不到的 |
+| --- | --- | --- | --- |
+| **CPU fp32 对照** | 同一个 `LocalEmbedder` 实现，只切 `device`/`dtype` | 设备/精度相关的**内核 bug**（如 MPS bf16 SDPA 算错） | 池化索引、归一化方向等**算法逻辑错误**（两边一起错，差异恒为 0） |
+| **独立参考实现对照**（模型层） | 手写 `forward → mask 末位 → L2`，不复用 `_run_batches` | 池化取错位置、漏归一化、`hidden[:,-1]` 取到 pad 等**算法错误** | 设备内核问题（两者同设备） |
+| **手算注意力基准**（内核自检） | `matmul + tril mask + softmax`，不走 SDPA | attention **内核/算法**错误 | 池化与 embedding 层逻辑 |
+
+### query 前缀的文本层断言
+
+只看「query≠document 向量」「前缀 27 token」这类**结果层**观察是不够的：
+把前缀换成另一个短错串、拼到文本**之后**、或把 query/document 前缀**互换**，
+都能让向量"不同且够长"，结果层断言照样全绿。因此测试会 **spy
+`_run_batches` 的入参**，在**文本层**逐字断言：
+
+```python
+prepared[0] == embedder.query_prefix + text  # 内容与位置都精确
+prepared[0].startswith(embedder.query_prefix)  # 前缀在前
+not prepared[0].endswith(embedder.query_prefix)  # 排除后置拼接
+prepared[0].count(embedder.query_prefix) == 1  # 只出现一次
+not doc_prepared[0].startswith(embedder.query_prefix)  # document 不带 query 前缀
+```
+
+外加两条更强的约束：
+
+- `embedder.query_prefix` 必须与模型 `config_sentence_transformers.json` 的
+  `prompts.query` **逐字一致**（排除换成短错串）；
+- **哨兵测试**：临时把两个前缀替换为 `[[Q-SENTINEL]]` / `[[D-SENTINEL]]`，
+  验证 query 路径取前者、document 路径取后者、二者未互换，最后复原
+  （真实配置里 `prompts.document` 恰为空，不做哨兵就漏掉"document 也用了
+  query 前缀"这类错误）。
 
 ## 常见问题
 
