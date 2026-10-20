@@ -7,6 +7,7 @@
 Mongo 库 / Redis 库基址 / Chroma 集合后缀）同样经环境变量注入。
 """
 
+import logging
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -79,6 +80,29 @@ _UPLOAD_DIR_RAW = _env_str("UPLOAD_DIR", "uploads")
 _UPLOAD_PATH = Path(_UPLOAD_DIR_RAW)
 
 
+def _env_choice(key: str, default: str, allowed: tuple[str, ...]) -> str:
+    """枚举型环境变量；取值非法（含空串）回退默认值并落 WARNING。
+
+    与 ``_env_int`` / ``_env_bool`` 同一容错哲学：笔误不应让应用起不来，
+    但也绝不能静默——非法取值必须留下 WARNING，否则「以为切了 cloud
+    实际还在 local」这类问题极难排查。取值大小写不敏感，且剥离行内注释
+    （``local # 默认`` 视为 ``local``）。
+    """
+    if key not in os.environ:  # 未设置：静默用默认值
+        return default
+    value = _strip_inline_comment(_env_str(key)).lower()
+    if value in allowed:
+        return value
+    logging.getLogger(__name__).warning(
+        "%s 取值非法（%r），回退默认值 %r；合法取值：%s",
+        key,
+        value,
+        default,
+        " | ".join(allowed),
+    )
+    return default
+
+
 class Config:
     """基础配置：全部配置项集中于此。"""
 
@@ -124,15 +148,20 @@ class Config:
     CHROMA_PORT = _env_int("CHROMA_PORT", 8000)
     CHROMA_COLLECTION_SUFFIX = _env_str("CHROMA_COLLECTION_SUFFIX", "")
 
-    # ---- Embedding（OpenAI 兼容端点；云端优先、本地侧车兜底的双模）----
+    # ---- Embedding（OpenAI 兼容端点；生效策略由 EMBEDDING_MODE 决定）----
+    # EMBEDDING_MODE：local（默认，只打本地侧车、零云端请求）|
+    # cloud（只探云端）| auto（旧行为：云端优先、本地兜底）。
+    EMBEDDING_MODE = _env_choice("EMBEDDING_MODE", "local", ("local", "cloud", "auto"))
+    # 以下三项仅在 EMBEDDING_MODE=cloud|auto 时读取；默认 local 不读、不请求。
     EMBEDDING_BASE_URL = _env_str("EMBEDDING_BASE_URL", "")
     EMBEDDING_API_KEY = _env_str("EMBEDDING_API_KEY", "")
     EMBEDDING_MODEL = _env_str("EMBEDDING_MODEL", "")
     EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 1024)
 
     # ---- 本地 Embedding 侧车（tools/local_embedding，OpenAI 兼容，默认 8010）----
-    # 云端不可用时按 EMBEDDING_LOCAL_ENABLED 决定是否降级到本地；三者
-    # 均非敏感信息，可入 .env 与文档。
+    # 默认 local 模式下生效；auto 模式下作为云端不可用时的兜底。
+    # EMBEDDING_LOCAL_ENABLED 只在 auto 模式下用于关闭兜底，local 模式恒探测。
+    # 三者均非敏感信息，可入 .env 与文档。
     EMBEDDING_LOCAL_BASE_URL = _env_str("EMBEDDING_LOCAL_BASE_URL", "http://127.0.0.1:8010/v1")
     EMBEDDING_LOCAL_MODEL = _env_str("EMBEDDING_LOCAL_MODEL", "qwen3_embedding_0_6b")
     EMBEDDING_LOCAL_ENABLED = _env_bool("EMBEDDING_LOCAL_ENABLED", True)

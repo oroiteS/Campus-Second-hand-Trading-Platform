@@ -1,8 +1,9 @@
 # 本地 Embedding 侧车（Qwen3-Embedding-0.6B）
 
 把本机 `qwen3_embedding_0_6b/` 模型包装成一个 **OpenAI 兼容** 的
-`POST /v1/embeddings` HTTP 服务，供 `campus_backend` 在云端 Embedding 不可用时
-兜底（契约 `EmbeddingHealth.mode = local`）。
+`POST /v1/embeddings` HTTP 服务，供 `campus_backend` 调用（契约
+`EmbeddingHealth.mode = local`）。后端**默认 `EMBEDDING_MODE=local`：只打本侧车、
+不发任何云端请求**；云端仅作为 `EMBEDDING_MODE=cloud|auto` 时的可选路径保留。
 
 ## 为什么独立成 `tools/local_embedding/`（而不是放进 `campus_backend/src/`）
 
@@ -171,18 +172,24 @@ client.embeddings.create(
 ```text
 campus_backend (Py3.12, 无 torch)
   └─ GET /api/health → services/system_service._embedding_health
-       ├─ 1) 云端 EMBEDDING_BASE_URL（5s 超时）→ 可用则 mode=cloud
-       └─ 2) 云端失败且 EMBEDDING_LOCAL_ENABLED → 本侧车
-              EMBEDDING_LOCAL_BASE_URL（默认 http://127.0.0.1:8010/v1）
+       EMBEDDING_MODE=local（默认，推荐）
+         └─ 只探本侧车 EMBEDDING_LOCAL_BASE_URL（默认 http://127.0.0.1:8010/v1）
               → 可用则 mode=local；否则 mode=null / status=down
+            （不读云端配置、不发云端请求、无 5s 云端等待）
+       EMBEDDING_MODE=auto（旧行为）
+         ├─ 1) 云端 EMBEDDING_BASE_URL（5s 超时）→ 可用则 mode=cloud
+         └─ 2) 云端失败且 EMBEDDING_LOCAL_ENABLED → 本侧车 → mode=local
+       EMBEDDING_MODE=cloud
+         └─ 只探云端；失败即 mode=null（不回落本侧车）
 ```
 
 后端 `.env`（`campus_backend/.env.example` 有模板）：
 
 ```dotenv
+EMBEDDING_MODE=local                                     # 默认；只打本侧车
 EMBEDDING_LOCAL_BASE_URL=http://127.0.0.1:8010/v1
 EMBEDDING_LOCAL_MODEL=qwen3_embedding_0_6b
-EMBEDDING_LOCAL_ENABLED=true
+EMBEDDING_LOCAL_ENABLED=true                             # 仅 auto 模式用于开关兜底
 ```
 
 后端**只经 HTTP** 调用本侧车，不 import torch、不加载模型；停止侧车后
@@ -191,17 +198,24 @@ EMBEDDING_LOCAL_ENABLED=true
 
 ### 探活耗时（P3-1）
 
-`/api/health` 的 Embedding 段是**串行**两跳：先云后再本地，因此
+耗时取决于 `EMBEDDING_MODE`：
 
-| 场景 | 大致耗时 | 说明 |
+| 模式 / 场景 | 大致耗时 | 说明 |
 | --- | --- | --- |
-| 云端正常 | 数十 ms – 1s | 只打云端，不碰本地 |
-| **云端不可达** | **≈5s** | 云端 5s 超时**之后**才会去探本地侧车 |
-| 云端 5xx 秒回 | < 1s + 本地耗时 | 立即降级探本地 |
-| 云端 + 本地都不可达 | ≈20s | 5s + 本地 15s 超时 |
+| **`local`（默认）+ 本侧车正常** | **数 ms – 数十 ms** | 只探本侧车，**没有 5s 云端等待** |
+| `local` + 本侧车未启动 | 立即失败 | 连接拒绝，仍 HTTP 200 + `degraded` |
+| `local` + 本侧车挂死 | ≤15s | 本地探活超时 |
+| `auto` + 云端正常 | 数十 ms – 1s | 只打云端，不碰本地 |
+| `auto` + 云端不可达 | **≈5s + 本地耗时** | 云端 5s 超时**之后**才探本侧车 |
+| `auto` + 云端 5xx 秒回 | < 1s + 本地耗时 | 立即降级探本地 |
+| `auto` + 云端与本地都不通 | ≈20s | 5s + 本地 15s 超时 |
+| `cloud` + 云端不可达 | ≈5s | 只探云端，不回落本地 |
 
-即：**云端地址不可达时，`/api/health` 会慢约 5 秒**（契约要求的“云端优先”
-顺序决定的）。前端/联调若对 health 有超时限制，请按 ≥20s 设。
+默认 `local` 模式下 `/api/health` 不再有那 5s 停顿。后端探活回环地址
+（`127.0.0.1` / `localhost` / `::1`）时**强制直连、绕过系统代理**，所以
+本机开着 Clash 等全局代理也不影响本侧车的探活结论与耗时。只有在 `auto` 模式下
+（云端优先顺序决定）才会出现「云端地址不可达 → health 慢约 5 秒」；此时前端/
+联调请按 ≥20s 设超时。
 
 ## 实现关键点
 

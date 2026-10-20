@@ -45,27 +45,61 @@ uv run python main.py          # host/port 来自 .env（HOST 固定 127.0.0.1�
 - `GET /api/openapi.json` —— 契约原文的 JSON 序列化
 - `GET /api/docs` —— Swagger UI（flask-swagger-ui，离线静态资源）
 
-## Embedding 双模（云端优先、本地侧车兜底）
+## Embedding 三模式（默认纯本地，云端开关保留）
 
-Embedding 端点有两种生效模式，`/api/health` 的 `data.embedding.mode` 如实上报：
+Embedding 端点的探测策略由 `EMBEDDING_MODE` 决定，**默认 `local`：只打本地
+侧车，完全不碰云端**（零外发请求、零云端费用、零 5s 云端等待）。`/api/health`
+的 `data.embedding.mode` 如实上报实际生效的一方：
 
-| 场景 | mode | model | status | 整体 status |
-| --- | --- | --- | --- | --- |
-| 云端可用 | `cloud` | `EMBEDDING_MODEL` | `up` | `ok` |
-| 云端不可用、本地侧车可用 | `local` | `EMBEDDING_LOCAL_MODEL` | `up` | `ok` |
-| 都不可用（或本地被禁用） | `null` | `EMBEDDING_MODEL` | `down` | `degraded` |
+| `EMBEDDING_MODE` | 探测顺序 | 成功时 mode / model | 失败时 mode / model |
+| --- | --- | --- | --- |
+| `local`（默认） | 只探本地侧车 | `local` / `EMBEDDING_LOCAL_MODEL` | `null` / `EMBEDDING_LOCAL_MODEL` |
+| `cloud` | 只探云端 | `cloud` / `EMBEDDING_MODEL` | `null` / `EMBEDDING_MODEL` |
+| `auto`（旧行为） | 云端 → 本地 → down | `cloud` 优先，云端失败则 `local` 兜底 | `null` / `EMBEDDING_MODEL` |
 
-判定顺序固定为 **cloud → local → down**：先探云端（5s 超时），失败且
-`EMBEDDING_LOCAL_ENABLED=true` 时才探本地侧车；两者都失败仍 **HTTP 200**，
-只让 `data.status = degraded`。云端失败必落 WARNING 日志（仅原因摘要，不含凭据）。
+补充规则：
 
-云端配置不全（`EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`
-任一为空）时**直接判为云端不可用且不发任何请求**：`OpenAI(base_url="")` 会
-隐式回落到官方 `https://api.openai.com/v1`，若 key 非空则凭据外泄。
+- `mode` 三态严格按契约映射：只有真正接管的一方才上报 `local` / `cloud`，
+  不可用一律 `null`，`status=down`。契约（`docs/api/openapi.yaml`
+  `EmbeddingHealth`）未改，枚举仍是 `cloud | local` 且 nullable。
+- `local` 模式**无视** `EMBEDDING_LOCAL_ENABLED`（已显式选择本地，恒探测）；
+  该开关只在 `auto` 模式下用于关闭兜底。
+- `auto` 模式下云端配置不全（`EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` /
+  `EMBEDDING_MODEL` 任一为空）时**直接跳过云端且不发请求**：
+  `OpenAI(base_url="")` 会隐式回落到官方 `https://api.openai.com/v1`，若 key
+  非空则凭据外泄。`cloud` 模式同样遵守这条安全短路。
+- `EMBEDDING_MODE` 取值非法（如 `LOCALX`、空串）→ 回退 `local` 并落 WARNING，
+  绝不会因笔误退回「先打云端」。
+- 任一依赖不可用仍 **HTTP 200**，只让 `data.status = degraded`；失败必落
+  WARNING 日志（仅原因摘要，不含凭据）。
+- 本地侧车地址（`127.0.0.1` / `localhost` / `::1`）的探活**强制直连、绕过系统
+  代理**：macOS 开着 Clash 等全局代理时，`httpx` 默认会把本机回环请求也发给
+  代理，侧车停掉时代理返回 502 且耗时数秒，把纯本机探活变成对外依赖。云端
+  地址不受影响，仍按系统代理设置出海。
 
-**探活耗时**：两跳是串行的，云端正常时是数十 ms ~1s；**云端地址不可达时要等
-满 5s 超时才会去探本地**，再叠加本地耗时（本地 15s 超时）。最坏
-（云不可达 + 本地不可达）≈20s。健康检查调用方请按 ≥20s 设超时。
+**探活耗时（按模式分别表述）**：
+
+| 模式 / 场景 | 典型耗时 | 最坏耗时 |
+| --- | --- | --- |
+| `local` + 侧车正常 | 数 ms ~ 数十 ms | 本地 15s 超时 |
+| `local` + 侧车未起 | 立即失败（连接拒绝） | 本地 15s 超时 |
+| `cloud` + 云端正常 | 数十 ms ~ 1s | 云端 5s 超时 |
+| `auto` + 云端不可达、本地正常 | **5s +** 本地耗时 | 5s + 15s ≈ 20s |
+| `auto` + 双不可达 | — | ≈ 20s |
+
+也就是说：**默认 `local` 模式的 health 不再有那 5s 云端等待**，接口从「最坏
+≈20s」降到「最坏 ≈15s、常态数十 ms」。健康检查调用方按所选模式设定超时：
+`local` / `cloud` 可按 ≥15s，`auto` 才需要 ≥20s。
+
+**切回云端**：只改一行 `.env` 即可（不需要改代码，也不需要重启之外的任何操作）：
+
+```dotenv
+EMBEDDING_MODE=auto    # 云端优先 + 本地兜底（推荐，最平滑）
+# EMBEDDING_MODE=cloud # 只走云端，本地不参与
+```
+
+切回前确认 `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`
+三项已填（`cloud` 模式下缺项会直接 `mode=null/status=down`，不再兜底本地）。
 
 本地侧车是**独立进程**（torch/MPS 与后端运行时不同），位于仓库根
 `tools/local_embedding/`，后端只经 HTTP（OpenAI 兼容）调用它：
@@ -82,12 +116,15 @@ curl -s http://127.0.0.1:8010/health | python3 -m json.tool
 算出错误结果、向量不可信——此时后端探活仍会显示 `mode=local/status=up`
 （HTTP 层确实通了），排障请以侧车 `/health` 与日志为准。
 
-后端 `.env` 对应三项（`.env.example` 已含模板）：
+后端 `.env` 对应配置（`.env.example` 已含模板）：
 
 ```dotenv
+EMBEDDING_MODE=local                                       # 默认：纯本地
 EMBEDDING_LOCAL_BASE_URL=http://127.0.0.1:8010/v1
 EMBEDDING_LOCAL_MODEL=qwen3_embedding_0_6b
-EMBEDDING_LOCAL_ENABLED=true
+EMBEDDING_LOCAL_ENABLED=true                              # 仅 auto 模式生效
+# 以下三项仅 cloud / auto 模式读取，local 模式不读、不发请求
+# EMBEDDING_BASE_URL=... / EMBEDDING_API_KEY=... / EMBEDDING_MODEL=...
 ```
 
 启动方式、API 细节、`input_type` 查询前缀、常见问题见
