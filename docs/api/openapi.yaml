@@ -1,0 +1,644 @@
+# 校园二手交易平台 REST API 契约
+# ============================================================
+# 本文件是前后端并行开发的唯一事实源（single source of truth）。
+# - 覆盖节奏：批次 0 建立 components 公共规范与骨架接口；
+#   之后每个开发批次开工前由契约任务增量追加该批次接口。
+# - 修改规则：开发 agent 不得直接修改本文件；契约修订走
+#   feat/api/b<批次>-<主题> 分支 + 审查，并登记 docs/api/CHANGELOG.md。
+# - 版本号：与 CHANGELOG.md 条目一一对应。
+
+openapi: 3.0.3
+
+info:
+  title: 校园二手交易平台 API
+  version: 0.1.0
+  description: |
+    ## 总则
+
+    本契约服务于前后端并行开发：前端以本文件生成 TypeScript 类型（`openapi-typescript`）
+    并构建契约同构的 mock；后端实现与文档化以此为准。基线文档：
+
+    - 需求分析 v1.0（已确认）：`docs/需求分析.md`
+    - 项目规范 v0.4：`docs/plan/00-项目规范.md`（契约硬规则、批次与变更流程）
+
+    ### 统一响应体
+
+    所有接口（含错误）HTTP 层返回语义化状态码，响应 body 一律为：
+
+    ```json
+    { "code": 0, "message": "ok", "data": { } }
+    ```
+
+    | 字段 | 类型 | 说明 |
+    | --- | --- | --- |
+    | `code` | integer | `0` 表示成功；非 `0` 为业务错误码（见下表） |
+    | `message` | string | 面向用户的提示文案（中文）；成功时固定 `ok` |
+    | `data` | object / array / null | 业务数据；错误时为 `null` 或补充信息对象 |
+
+    ### 业务错误码（分段制）
+
+    `code = 0` 成功；失败按模块分段。**本批次已定义 10xx / 90xx 两段**，
+    20xx–60xx 段已预留，具体码随所属批次契约更新补全：
+
+    | code | HTTP | 含义 | 说明 |
+    | --- | --- | --- | --- |
+    | 0 | 2xx | 成功 | |
+    | 1001 | 401 | 令牌缺失或无效 | 未携带 `Authorization` 或令牌解析失败 |
+    | 1002 | 401 | 令牌已过期 | 前端应清除本地令牌并引导重新登录 |
+    | 1003 | 401 | 令牌已注销 | `logout` 后 `jti` 已入黑名单 |
+    | 1004 | 403 | 未通过校园认证 | 商品域等需认证接口的准入失败，平台最硬准入线 |
+    | 1005 | 403 | 需要管理员权限 | 管理接口角色校验失败 |
+    | 1006 | 429 | 登录失败次数超限 | 连续 5 次失败限流 10 分钟 |
+    | 20xx | — | 用户域 | 批次 1 定义（注册/资料/校园认证/学校校区） |
+    | 30xx | — | 商品域 | 批次 2 定义（商品/图片/收藏/分类/搜索/推荐） |
+    | 40xx | — | 交易域 | 批次 3 定义（订单/支付/评价） |
+    | 50xx | — | 聊天域 | 批次 4 定义（会话/消息） |
+    | 60xx | — | 管理域 | 批次 5 定义（审核/处置/统计/导入） |
+    | 9001 | 422 | 参数校验失败 | `data` 可携带字段级错误列表 |
+    | 9002 | 404 | 资源不存在或无权访问 | 含"非本校资源"场景；**不区分两种情况，防跨校探测** |
+    | 9003 | 409 | 资源状态冲突 | 如商品已被锁定下单、订单状态不允许该操作 |
+    | 9004 | 503 | 依赖服务不可用 | 仅用于降级后无法完成本操作的场景 |
+    | 9005 | 500 | 服务器内部错误 | |
+    | 9006 | 429 | 请求过于频繁 | 1006 之外的通用限流 |
+
+    ### 鉴权
+
+    - 方式：`Authorization: Bearer <JWT>`（`flask-jwt-extended` 签发）。
+    - 除标注 **公开** 的接口外均需登录；商品域接口额外要求已通过校园认证
+      （未认证返回 `403 / 1004`）；`/api/admin/*` 额外要求 `role = admin`
+      （返回 `403 / 1005`）。
+    - 图片实体文件经后端鉴权路由访问，不暴露可枚举静态目录；学生证照片仅
+      本人与管理员可读（越权返回 `404 / 9002`，同样防探测）。
+
+    ### 同校隔离
+
+    - 认证学生的一切商品域查询仅返回本校数据；构造他校资源 id 一律
+      `404 / 9002`，不泄露存在性。
+    - 管理员跨校可见，但只读与处置，不具备交易能力。
+
+    ### 降级约定
+
+    依赖（Embedding / Chroma / Redis / MongoDB）故障时**业务仍可用的接口照常
+    返回 200**，并在 `data` 中附加可选字段 `degraded: true` 与
+    `degraded_reason: string`，便于前端展示降级提示与答辩演示。
+
+    ### 通用格式约定
+
+    | 项 | 约定 |
+    | --- | --- |
+    | 时间 | ISO 8601 字符串，含时区偏移（统一 `+08:00`），如 `2026-10-20T15:04:05+08:00` |
+    | 金额 | number，单位元，最多两位小数 |
+    | id | integer（int64） |
+    | 分页参数 | `page`（从 1 起）、`page_size`（默认 20，上限 100） |
+    | 上传 | `multipart/form-data`；单文件 ≤ 5 MB；仅 `jpg` / `png` / `webp`；文件名服务端重写为内容哈希 |
+    | 布尔状态值 | 一律英文小写枚举（如 `on_sale`、`pending`），中文仅出现在展示文案 |
+
+    ### 工具链
+
+    - Swagger UI：`GET /api/docs`（flask-swagger-ui，离线可用）。
+    - 规范原文：`GET /api/openapi.json`（本文件的 JSON 序列化）。
+    - 前端类型生成：`openapi-typescript docs/api/openapi.yaml -o src/api/types.ts`
+      （脚本化进 `campus_frontend/package.json`，组件只准引用生成类型）。
+    - WebSocket 契约不在本文件内，见 `docs/api/websocket-事件.md`。
+
+    ### 标签规划（后续批次按此追加，保持稳定）
+
+    `system`(批次0) · `auth`/`users`/`certification`/`schools`(批次1) ·
+    `products`/`categories`/`favorites`/`recommendations`/`images`(批次2) ·
+    `orders`(批次3) · `conversations`(批次4) · `admin`(批次5)
+
+# ============================================================
+
+servers:
+  - url: http://127.0.0.1:5000/api
+    description: |
+      主仓开发环境（main）。前端 Vite dev server 将 `/api` 与 `/socket.io`
+      代理至此地址。worktree 隔离端口（5010/5020/5030）见 00-项目规范
+      「数据与端口隔离」；联调时以后端实际监听端口替换。
+
+tags:
+  - name: system
+    description: 系统与健康检查（批次 0 建立）
+
+# 全局默认鉴权：标注「公开」的接口在路径内以 security: [] 覆盖
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: 健康检查
+      description: |
+        **公开**。探测 MySQL / MongoDB / Redis / Chroma 四库连通性与
+        Embedding 端点生效模式（云端 / 本地），供启动自检、批次 0 联调
+        冒烟与答辩演示（AC-18）。
+
+        - 任一依赖不可用时 HTTP 仍返回 200，由 `data.status = degraded`
+          表达，逐项明细见 `data.services` 与 `data.embedding`。
+        - Embedding 双模（云端优先、本地兜底）的生效模式写入
+          `data.embedding.mode`。
+      security: []
+      responses:
+        '200':
+          description: 健康信息（含部分依赖不可用的降级态）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HealthData'
+              example:
+                code: 0
+                message: ok
+                data:
+                  status: ok
+                  checked_at: '2026-10-20T11:30:00+08:00'
+                  services:
+                    mysql:
+                      status: up
+                      latency_ms: 3
+                      error: null
+                    mongodb:
+                      status: up
+                      latency_ms: 5
+                      error: null
+                    redis:
+                      status: up
+                      latency_ms: 1
+                      error: null
+                    chroma:
+                      status: up
+                      latency_ms: 8
+                      error: null
+                  embedding:
+                    mode: cloud
+                    model: qwen3.7-text-embedding-flash
+                    dim: 1024
+                    status: up
+
+  /openapi.json:
+    get:
+      tags: [system]
+      operationId: getOpenapiSpec
+      summary: OpenAPI 规范原文（JSON）
+      description: |
+        **公开**。返回本文件（`docs/api/openapi.yaml`）的 JSON 序列化，
+        供 Swagger UI 与工具链消费。由后端 `src/common/` 提供并保持与
+        仓库内 yaml 同步。
+      security: []
+      responses:
+        '200':
+          description: OpenAPI 3.0 文档对象。
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /docs:
+    get:
+      tags: [system]
+      operationId: getSwaggerUi
+      summary: Swagger UI 页面
+      description: |
+        **公开**。flask-swagger-ui 蓝图渲染的接口文档页面（静态资源随包
+        分发，离线可用）。批次 0 联调冒烟项之一。
+      security: []
+      responses:
+        '200':
+          description: Swagger UI HTML 页面。
+          content:
+            text/html:
+              schema:
+                type: string
+
+# ============================================================
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: '`Authorization: Bearer <token>`，登录接口签发（批次 1 落地）。'
+
+  # ---------- 可复用请求参数 ----------
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      description: 页码，从 1 起。
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSizeParam:
+      name: page_size
+      in: query
+      description: 每页条数，默认 20，上限 100。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  # ---------- 可复用错误响应 ----------
+  responses:
+    Unauthorized:
+      description: 未登录或令牌无效（code 1001 / 1002 / 1003）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 1002
+            message: 登录已过期，请重新登录
+            data: null
+    Forbidden:
+      description: 未通过校园认证或无管理员权限（code 1004 / 1005）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 1004
+            message: 请先完成校园认证
+            data: null
+    NotFound:
+      description: 资源不存在或无权访问（code 9002；含非本校资源，防探测）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 9002
+            message: 资源不存在
+            data: null
+    ValidationError:
+      description: 参数校验失败（code 9001；data 携带字段级错误）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 9001
+            message: 参数校验失败
+            data:
+              fields:
+                password: 密码长度不得低于 8 位且需包含字母与数字
+    Conflict:
+      description: 资源状态冲突（code 9003；如商品已被锁定、订单状态不允许该操作）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 9003
+            message: 当前状态不允许该操作
+            data: null
+    RateLimited:
+      description: 请求过于频繁（code 1006 登录限流 / 9006 通用限流）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 1006
+            message: 登录失败次数过多，请 10 分钟后重试
+            data: null
+    InternalError:
+      description: 服务器内部错误（code 9005）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            code: 9005
+            message: 服务开小差了，请稍后重试
+            data: null
+
+  # ---------- Schema ----------
+  schemas:
+    # -- 响应外层 --
+    SuccessEnvelope:
+      type: object
+      description: |
+        成功响应外层。`data` 的实际类型由各接口经 `allOf` 覆盖定义；
+        降级场景在 `data` 内附加 `degraded: true` 与 `degraded_reason`。
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+          description: 0 表示成功。
+        message:
+          type: string
+          example: ok
+        data: {}
+
+    ErrorEnvelope:
+      type: object
+      description: 错误响应外层。code 取值见「业务错误码」表。
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          description: 非 0 业务错误码。
+        message:
+          type: string
+          description: 面向用户的中文提示。
+        data:
+          type: object
+          nullable: true
+          description: 补充信息（如 9001 的字段级错误），无则为 null。
+
+    PaginatedData:
+      type: object
+      description: |
+        分页数据容器。`items` 元素类型由各列表接口经 `allOf` 覆盖；
+        与 `PageParam` / `PageSizeParam` 查询参数配套。
+      required: [items, page, page_size, total, pages]
+      properties:
+        items:
+          type: array
+          items: {}
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+        total:
+          type: integer
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+
+    # -- 健康检查 --
+    ServiceHealth:
+      type: object
+      description: 单个存储依赖的连通状态。
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [up, down]
+        latency_ms:
+          type: integer
+          nullable: true
+          description: 探测往返耗时（毫秒）；不可用时为 null。
+        error:
+          type: string
+          nullable: true
+          description: 不可用时的原因摘要；正常为 null。
+
+    EmbeddingHealth:
+      type: object
+      description: |
+        Embedding 端点状态。云端优先、本地兜底：`mode` 报告当前生效
+        模式；两者皆不可用时 `status = down` 且 `mode = null`。
+      required: [mode, model, dim, status]
+      properties:
+        mode:
+          type: string
+          nullable: true
+          enum: [cloud, local]
+          description: cloud = 云端 OpenAI 兼容端点；local = 进程内本地模型；两者皆不可用时为 null。
+        model:
+          type: string
+          example: qwen3.7-text-embedding-flash
+        dim:
+          type: integer
+          description: 向量维度，须与 Chroma 集合一致。
+          example: 1024
+        status:
+          type: string
+          enum: [up, down]
+
+    HealthData:
+      type: object
+      description: 健康检查数据体。
+      required: [status, checked_at, services, embedding]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: 全部依赖可用为 ok，任一不可用为 degraded。
+        checked_at:
+          type: string
+          format: date-time
+          description: 探测时间（ISO 8601，+08:00）。
+        services:
+          type: object
+          required: [mysql, mongodb, redis, chroma]
+          properties:
+            mysql:
+              $ref: '#/components/schemas/ServiceHealth'
+            mongodb:
+              $ref: '#/components/schemas/ServiceHealth'
+            redis:
+              $ref: '#/components/schemas/ServiceHealth'
+            chroma:
+              $ref: '#/components/schemas/ServiceHealth'
+        embedding:
+          $ref: '#/components/schemas/EmbeddingHealth'
+
+    # -- 公共引用类型（概要） --
+    ImageRef:
+      type: object
+      description: |
+        图片引用。实体文件经后端鉴权路由 `/api/images/{id}` 访问
+        （该接口随批次 1 落地），不暴露可枚举静态目录。
+      required: [id, url]
+      properties:
+        id:
+          type: integer
+          format: int64
+        url:
+          type: string
+          description: 鉴权访问路径（同源相对路径）。
+          example: /api/images/42
+
+    CategoryRef:
+      type: object
+      description: 分类引用（全局单级分类）。
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: 数码电子
+
+    SchoolRef:
+      type: object
+      description: 学校引用（公开列表与管理场景共用的概要形态）。
+      required: [id, name, multi_campus]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: 示例大学
+        multi_campus:
+          type: boolean
+          description: 是否多校区；多校区时认证申请必须选择校区。
+
+    CampusRef:
+      type: object
+      description: 校区引用。
+      required: [id, school_id, name]
+      properties:
+        id:
+          type: integer
+          format: int64
+        school_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: 东校区
+
+    UserSummary:
+      type: object
+      description: |
+        用户概要：列表与引用场景（卖家、评价人、会话对象）共用的形态。
+        字段级定稿随批次 1 用户接口落地，微调经 CHANGELOG 登记。
+      required: [id, display_name, nickname, auth_status, role]
+      properties:
+        id:
+          type: integer
+          format: int64
+        display_name:
+          type: string
+          description: |
+            展示名。认证通过后固定为「昵称-学校名称」，多校区学校为
+            「昵称-学校名称(校区名称)」（FR-USR-10）；未认证为昵称。
+          example: 小明-示例大学(东校区)
+        nickname:
+          type: string
+        avatar:
+          allOf:
+            - $ref: '#/components/schemas/ImageRef'
+          nullable: true
+        credit_score:
+          type: number
+          nullable: true
+          description: |
+            信誉分：该用户收到的全部评价评分的算术平均，两位小数；
+            无评价为 null，前端展示「暂无」（FR-ORD-09）。
+          example: 4.67
+        auth_status:
+          $ref: '#/components/schemas/AuthStatus'
+        role:
+          $ref: '#/components/schemas/Role'
+
+    ProductSummary:
+      type: object
+      description: |
+        商品卡片概要：首页推荐宫格、列表、搜索结果共用。
+        详情字段（描述、图集、浏览量等）随批次 2 商品详情接口定义。
+      required: [id, title, price, condition, status, favorite_count, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+          example: 罗技 K845 机械键盘 98 新
+        price:
+          type: number
+          description: 售价（元，两位小数）。
+          example: 199.0
+        original_price:
+          type: number
+          nullable: true
+          description: 原价（元），可空。
+          example: 399.0
+        condition:
+          type: string
+          description: 成色展示文本；枚举值域随批次 2 契约更新定稿。
+          example: 九成新
+        status:
+          $ref: '#/components/schemas/ProductStatus'
+        cover:
+          allOf:
+            - $ref: '#/components/schemas/ImageRef'
+          nullable: true
+          description: 封面图（图集首图）；无图商品为 null。
+        favorite_count:
+          type: integer
+          description: 收藏数。
+          minimum: 0
+        category:
+          allOf:
+            - $ref: '#/components/schemas/CategoryRef'
+          nullable: true
+        seller:
+          allOf:
+            - $ref: '#/components/schemas/UserSummary'
+        campus:
+          allOf:
+            - $ref: '#/components/schemas/CampusRef'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          description: 发布时间（ISO 8601，+08:00）。
+
+    # -- 业务枚举（值域由需求分析状态机定死，双端不得私改） --
+    Role:
+      type: string
+      enum: [student, admin]
+      description: 角色：student 学生 / admin 管理员（管理员不能发布商品或下单）。
+
+    AuthStatus:
+      type: string
+      enum: [unverified, pending, approved, rejected]
+      description: |
+        校园认证状态：unverified 未认证 / pending 待审核 /
+        approved 已通过 / rejected 已驳回（驳回展示管理员填写的原因）。
+
+    UserAccountStatus:
+      type: string
+      enum: [active, banned]
+      description: 账号状态：active 正常 / banned 封禁（封禁用户禁止登录）。
+
+    ProductStatus:
+      type: string
+      enum: [on_sale, trading, sold, off_sale, deleted]
+      description: |
+        商品状态：on_sale 上架 / trading 交易中（仅买卖双方与管理员可见）/
+        sold 已售 / off_sale 已下架（管理员强制下架仅管理员可恢复）/
+        deleted 已删除。仅 on_sale 参与列表、搜索与推荐。
+
+    ModerationStatus:
+      type: string
+      enum: [normal, pending_review, handled]
+      description: |
+        敏感词复核状态：normal 正常 / pending_review 待复核（命中词库，
+        照常可见并进入管理队列）/ handled 已处置。
+
+    OrderStatus:
+      type: string
+      enum: [pending_payment, paid, completed, cancelled, closed]
+      description: |
+        订单状态：pending_payment 待支付（30 分钟未支付自动关闭）/
+        paid 已支付 / completed 已完成 / cancelled 已取消 /
+        closed 已关闭（支付超时）。
+
+    PaymentStatus:
+      type: string
+      enum: [pending, paid, refunded]
+      description: 支付记录状态：pending 待支付 / paid 已支付 / refunded 已退款（已支付订单协商取消）。
+
+    ChatContentType:
+      type: string
+      enum: [text, image]
+      description: 聊天消息类型：text 文本 / image 图片（复用统一上传能力）。
