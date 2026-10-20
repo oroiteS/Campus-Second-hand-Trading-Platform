@@ -8,8 +8,8 @@
 
 | 维度 | Flask 后端 | 本侧车 |
 | --- | --- | --- |
-| 运行时 | Python **3.12**（`campus_backend/.venv`） | Python **3.10**（`~/my/torch_python/.venv`） |
-| 依赖 | Flask / SQLAlchemy / openai…（**无 torch**） | torch 2.11（MPS）+ transformers + tokenizers + safetensors |
+| 运行时 | Python **3.12**（`campus_backend/.venv`） | 独立 venv `~/my/torch_python/.venv` |
+| 依赖 | Flask / SQLAlchemy / openai…（**无 torch**） | torch 2.14（MPS）+ transformers 5.20 + tokenizers + safetensors |
 | 生命周期 | 随请求进程常驻 | 独立长驻进程，可单独重启/降级 |
 
 torch 及推理栈与机器、芯片、CUDA/MPS 强相关，且**不允许**装进后端工程；两者
@@ -24,8 +24,8 @@ HTTP（OpenAI 兼容协议）通信。
   "import torch, transformers, tokenizers, safetensors; print(transformers.__version__)"
 ```
 
-侧车**只用标准库 `http.server`** 实现 HTTP 层，不引入 Flask —— 避免给 3.10
-推理环境再加一层 Web 框架依赖。
+侧车**只用标准库 `http.server`** 实现 HTTP 层，不引入 Flask —— 避免给推理
+环境再加一层 Web 框架依赖。侧车代码只用 Py3.10+ 语法，可在 3.10 / 3.12 下运行。
 
 ## 启动
 
@@ -61,15 +61,45 @@ cd <仓库根>
   "model": "qwen3_embedding_0_6b",
   "dim": 1024,
   "device": "mps",
+  "dtype": "bfloat16",
   "model_path": "/…/qwen3_embedding_0_6b",
   "backend": "transformers",
+  "selftest": "ok",
+  "selftest_detail": {
+    "status": "ok",
+    "seq_lens": [17, 24, 32],
+    "head_dim": 128,
+    "device": "mps",
+    "dtype": "bfloat16",
+    "max_rel_err": 0.004573,
+    "per_seq": [{"seq_len": 17, "rel_err": 0.00381}, "…"],
+    "threshold": 0.05,
+    "elapsed_ms": 56.0
+  },
   "load_seconds": 2.94,
   "loaded_at": "2026-10-20T16:16:15+0800"
 }
 ```
 
-模型加载失败时返回 **HTTP 503**，`status = "error"` 且带结构化 `error`
-（`type` / `message` / `model_path`）；进程不退出，便于排障后重启。
+- `selftest`：启动时**推理内核自检**的结论，`ok` / `failed` / `error` / `skipped`；
+  见下文「运行时内核自检」。`failed` 时 `/health` 仍返回 200（服务可跑但结果可疑），
+  同时打 ERROR 日志——不会出现“探活永远正常、向量其实全错”。
+- 模型加载失败时返回 **HTTP 503**，`status = "error"` 且带结构化 `error`
+  （`type` / `message` / `model_path`）；进程不退出，便于排障后重启。
+
+### `GET /v1/models`（OpenAI 兼容）
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "qwen3_embedding_0_6b", "object": "model", "created": 0, "owned_by": "local"}
+  ]
+}
+```
+
+OpenAI 官方 SDK、LangChain 等客户端常先探测该接口；`POST /v1/models` 返回
+405（语义与 `GET` 明确区分）。
 
 ### `POST /v1/embeddings`（OpenAI 兼容）
 
@@ -103,7 +133,13 @@ cd <仓库根>
 ```
 
 错误体沿用 OpenAI 风格 `{"error": {"message", "type", "param", "code"}}`：
-`400` 请求非法、`503` 模型未就绪、`500` 推理异常、`404`/`405` 路径或方法不符。
+`400` 请求非法（`type=invalid_request_error`）、`503` 模型未就绪
+（`type=service_unavailable`）、`500` 推理异常（`type=server_error`）、
+`404` / `405` 路径或方法不符。
+
+> 所有**非 200** 响应都会带上 `Connection: close` 并主动断开连接：错误分支
+> 通常没有消费请求体，若在 keep-alive 上复用，残留 body 会被当作下一个请求行，
+> 造成 400/501 串包。正常 200 响应仍保持 keep-alive 复用。
 
 ### 查询 / 文档非对称前缀（`input_type`）
 
@@ -153,6 +189,20 @@ EMBEDDING_LOCAL_ENABLED=true
 `/api/health` 仍返回 **HTTP 200**，仅 `data.status = degraded`、
 `data.embedding.mode = null`。
 
+### 探活耗时（P3-1）
+
+`/api/health` 的 Embedding 段是**串行**两跳：先云后再本地，因此
+
+| 场景 | 大致耗时 | 说明 |
+| --- | --- | --- |
+| 云端正常 | 数十 ms – 1s | 只打云端，不碰本地 |
+| **云端不可达** | **≈5s** | 云端 5s 超时**之后**才会去探本地侧车 |
+| 云端 5xx 秒回 | < 1s + 本地耗时 | 立即降级探本地 |
+| 云端 + 本地都不可达 | ≈20s | 5s + 本地 15s 超时 |
+
+即：**云端地址不可达时，`/api/health` 会慢约 5 秒**（契约要求的“云端优先”
+顺序决定的）。前端/联调若对 health 有超时限制，请按 ≥20s 设。
+
 ## 实现关键点
 
 - **设备**：`auto` → MPS 可用则 `mps + bfloat16`，否则 `cpu + float32`。
@@ -167,6 +217,27 @@ EMBEDDING_LOCAL_ENABLED=true
   HTTP 层是 `ThreadingHTTPServer`，探活与推理不会互相堵死。
 - **离线**：`local_files_only=True` + `trust_remote_code=False`，不联网、不执行模型侧代码。
 
+## 运行时内核自检（防“探活正常、向量全错”）
+
+启动加载模型后立刻跑一次 `run_kernel_selftest()`，结论写入 `/health.selftest`：
+
+- **输入**：固定种子（20261020）生成 Q/K/V，`seq_len ∈ {17, 24, 32}`
+  （覆盖 MPS SDPA 的长序列分支 —— 历史 bug 正是在 seq>16 触发），
+  `head_dim = 128`（与真实模型一致）、`heads = 4`；
+- **被测**：生产配置（`mps + bfloat16` 或 `cpu + float32`）上的
+  `F.scaled_dot_product_attention(..., is_causal=True)`；
+- **基准**：**独立实现**——`matmul + 显式 tril mask + softmax + matmul` 手算
+  causal attention（不能用 SDPA 当基准，否则内核坏了两边一起错、差值为 0）；
+- **判据**：相对误差 `max|diff| / max|baseline| ≤ 0.05`；正常 bf16 实测
+  ≈0.0025–0.0046，坏内核可达 1e+0；
+- **失败行为**：`/health` 报 `selftest: "failed"` + ERROR 日志，**但不阻止启动**
+  （仍可 `--device cpu` 兜底排查）。
+
+> 注：`head_dim` 必须取真实值。实测 torch 2.14.1 的 MPS bf16 SDPA 在
+> `head_dim ∈ {8, 16}` 且 `seq > 16` 时**仍然**给出错误结果（rel_err≈1.18），
+> 而 `head_dim ∈ {32, 64, 128, 256}` 正常。Qwen3-Embedding-0.6B 是 128，
+> 因此用真实 head_dim 自检，既覆盖长序列路径、又不会把无关缺口误报成生产故障。
+
 ## 自测
 
 ```bash
@@ -174,9 +245,19 @@ cd tools/local_embedding
 ~/my/torch_python/.venv/bin/python test_server.py
 ```
 
-三层：协议层（假 embedder，无需模型）→ 模型层（真模型，1024 维 / 范数 / 批一致 /
-语义近似 / query 前缀）→ 端到端（真模型 + 真实 HTTP）。缺依赖时打印 SKIP 并以
-退出码 0 结束（不算失败），断言失败退出码 1。
+四层，共 90+ 项断言：
+
+1. **协议层**（假 embedder，无需 torch）：`/health`、`/v1/models`、
+   `/v1/embeddings` 的字段/错误码/OpenAI 结构；**keep-alive 串包回归**
+   （404/405/400 之后同连接必须断开，200 之后必须复用）。
+2. **内核自检层**：生产配置必须 `ok`、CPU fp32 必须 rel_err=0；再用代理 shim
+   把 SDPA 换成“输出全零”的坏内核，验证自检确实能报 `failed`。
+3. **模型层**：三方一致性（单条 / 等长批量无 padding / 混合批量有 padding，
+   两两 cosine ≥ 0.99）、长度覆盖 **17 / 24 / 32 token**、query 前缀路径
+   （27 token）、**CPU fp32 基准对照**（cosine ≥ 0.99）、检索排序。
+4. **端到端**：真模型 + 真 HTTP，含 `/v1/models` 与 keep-alive 复用。
+
+缺依赖时打印 SKIP 并以退出码 0 结束（不算失败），断言失败退出码 1。
 
 ## 常见问题
 
@@ -184,14 +265,24 @@ cd tools/local_embedding
 跑错解释器了。必须用 `~/my/torch_python/.venv/bin/python`，不是
 `campus_backend/.venv/bin/python`（3.12，没有 torch）。
 
-**2. 启动日志出现 `可选依赖 scipy 导入失败 … 已在进程内标记为不可用`**
-本机 `scipy 1.15.3` 的 `_propack` 动态库损坏（`dlopen … has a zero-fill section
-type`），`sklearn` 随之导入失败；而 `transformers 5.20.2` 在**模块导入期**无条件
-`from sklearn.metrics import roc_curve` / `from scipy.optimize import …`，会把整个
-`import transformers` 拖挂。侧车启动时探测这两个包，导入失败就在
-`sys.modules` 里置 `None`（`transformers` 的 `is_*_available()` 用
-`importlib.util.find_spec` 判断，见 `server.py::_disable_broken_optional_deps`）。
-推理不需要 scipy/sklearn，屏蔽无副作用；包修好后该逻辑自动变成 no-op。
+**2. 启动日志出现「可选依赖 sklearn/scipy 存在但不可用 … 已在进程内标记为不可用」**
+`transformers` 5.20.x 在**模块导入期**就执行 `from sklearn.metrics import roc_curve`
+（候选生成器）与 `from scipy.optimize import linear_sum_assignment`（目标检测损失），
+两处都由 `is_*_available()` 守卫；该守卫走 `importlib.util.find_spec`，所以只要
+包装上了但**导入即失败**（历史环境：`scipy 1.15.3` 的 `_propack` 动态库损坏，
+`sklearn` 随之失败），`import transformers` 就会崩。
+
+侧车在 `transformers` 导入前调用 `_shield_broken_optional_deps()`：
+**按 transformers 真正需要的那一句 import 探测**（`sklearn.metrics.roc_curve` /
+`scipy.optimize.linear_sum_assignment`），只在确实失败时把**该包**在
+`sys.modules` 置 `None`。粒度是最小化的——不会因为 `scipy.linalg` 之类别的子模块
+坏掉就整包屏蔽 scipy；两个包各自独立判断；**未安装**时不做任何处理
+（`find_spec` 本来就是 `None`）。侧车推理不需要这两个包，包修好后自动 no-op。
+
+**2b. `/health` 里 `selftest: "failed"`**
+说明该设备/精度的注意力内核算错了，向量不可信。先 `--device cpu` 复测：
+CPU 也失败 → 代码/依赖问题；仅 MPS 失败 → torch/MPS 内核问题，降级用 CPU
+或换 torch 版本。
 
 **3. `/health` 返回 503**
 看 `error.message`：`FileNotFoundError` = 模型目录不对（用 `--model-dir` 指定）；

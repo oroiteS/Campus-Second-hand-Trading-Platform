@@ -2,20 +2,26 @@
 
 设计要点（详见同目录 README.md）：
 
-- 运行在独立的 Python 3.10 + torch 环境（``~/my/torch_python/.venv``），
-  与 Flask 后端（3.12、无 torch）运行时不同，因此独立成 ``tools/local_embedding/``，
+- 运行在独立的 ``~/my/torch_python/.venv``（torch + transformers）环境，与
+  Flask 后端（无 torch）运行时不同，因此独立成 ``tools/local_embedding/``，
   不放进 ``campus_backend/src/``；后端只经 HTTP 调用本服务。
 - 仅用标准库 ``http.server`` 实现 HTTP 层，不引入 Flask 等额外依赖。
 - ``POST /v1/embeddings`` 兼容 OpenAI 语义（``input`` 为字符串或字符串数组），
-  额外支持非标准字段 ``input_type``（query / document）选择是否加查询指令前缀。
+  额外支持非标准字段 ``input_type``（query / document）选择是否加查询指令前缀；
+  ``GET /v1/models`` 返回 OpenAI 格式的单模型列表。
 - 池化按模型自身配置：last-token pooling（用 attention_mask 定位最后一个有效
   token）+ L2 归一化，输出固定 1024 维（与后端 ``EMBEDDING_DIM`` 一致）。
+- 启动时跑一次 **推理内核自检**（SDPA causal，生产 dtype/device vs CPU fp32
+  基准），结果写入 ``GET /health`` 的 ``selftest`` 字段，防内核回归导致的
+  “探活正常、向量全错”。
 - 模型加载失败时进程不退出：``GET /health`` 返回 503 且带结构化错误。
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import json
 import logging
 import os
@@ -169,31 +175,171 @@ def parse_embedding_request(payload: Any) -> EmbeddingRequest:
 # --------------------------------------------------------------------------
 
 
-def _disable_broken_optional_deps() -> list[str]:
-    """屏蔽“装了但导入即失败”的可选依赖，避免拖垮 transformers 导入。
+def _shield_broken_optional_deps() -> list[str]:
+    """屏蔽「装了但导入即失败」的可选依赖，避免拖垮 ``import transformers``。
 
-    本机事实（2026-10 实测）：``scipy 1.15.3`` 的 ``_propack`` 扩展在 macOS
-    上动态库损坏，``import scipy.sparse`` 直接 ImportError；``sklearn`` 因此也
-    导入失败。而 ``transformers``（5.20.2）在 **模块导入期** 就无条件
-    ``from sklearn.metrics import roc_curve``（``candidate_generator``）与
-    ``from scipy.optimize import ...``（``loss_for_object_detection``），且其
-    ``is_*_available()`` 用 ``importlib.util.find_spec`` 探测——把不可用的包在
-    ``sys.modules`` 里置 ``None`` 后 find_spec 返回 None，transformers 即跳过。
+    背景（实测）：``transformers`` 5.20.x 在 **模块导入期** 就无条件执行
+    ``from sklearn.metrics import roc_curve``（``generation/candidate_generator``）
+    与 ``from scipy.optimize import linear_sum_assignment``
+    （``loss/loss_for_object_detection``）；两处都用 ``is_*_available()`` 守卫，
+    而该守卫走 ``importlib.util.find_spec(name)``。因此只要包“存在但导入失败”
+    （如历史环境里 scipy 的 ``_propack`` 动态库损坏），transformers 导入就会崩，
+    而 ``find_spec`` 探测本身不报错。
 
-    只对“探测导入已经失败”的包生效，可用的包不受影响；侧车推理不需要
-    scipy/sklearn，屏蔽无副作用。包修好后本函数自动变成 no-op。
+    策略（P1-1：最小化屏蔽粒度）：
+
+    1. **探测 transformers 真正需要的那一句 import**，而不是 ``import scipy``
+       这种粗粒度探测——只要 ``scipy.linalg`` 之类的其它子模块坏了、而
+       ``scipy.optimize.linear_sum_assignment`` 可用，就不会误伤 scipy；
+    2. 只在探测失败时，把**该包**在 ``sys.modules`` 里置 ``None``：
+       ``find_spec`` 随即返回 ``None``，transformers 跳过对应 import；
+    3. ``sklearn`` 与 ``scipy`` 各自独立判断，互不牵连；
+    4. 包不存在（未安装）时无需处理——``find_spec`` 本来就是 ``None``。
+
+    侧车推理根本不需要 scipy / sklearn，屏蔽对功能无影响；包修好后本函数
+    自动变成 no-op。
     """
-    disabled: list[str] = []
-    for name, probe in (("scipy", "scipy.sparse"), ("sklearn", "sklearn.metrics")):
+    shielded: list[str] = []
+    # (包名, transformers 实际会 import 的子模块, 需要的符号, 说明)
+    probes = (
+        ("sklearn", "sklearn.metrics", "roc_curve", "候选生成器"),
+        ("scipy", "scipy.optimize", "linear_sum_assignment", "目标检测损失"),
+    )
+    for name, module_name, symbol, purpose in probes:
+        if importlib.util.find_spec(name) is None:
+            LOGGER.debug("可选依赖 %s 未安装，transformers 会自动跳过（%s）", name, purpose)
+            continue
         try:
-            __import__(probe)
+            getattr(importlib.import_module(module_name), symbol)
         except Exception as exc:  # noqa: BLE001 —— 任何导入失败都视为不可用
             sys.modules[name] = None
-            disabled.append(name)
+            shielded.append(name)
             LOGGER.warning(
-                "可选依赖 %s 导入失败（%s），已在进程内标记为不可用", name, type(exc).__name__
+                "可选依赖 %s 存在但不可用（%s: %s），已在进程内标记为不可用；"
+                "transformers 将跳过依赖它的 %s 功能（侧车推理不受影响）",
+                name,
+                type(exc).__name__,
+                str(exc)[:200],
+                purpose,
             )
-    return disabled
+    return shielded
+
+
+# --------------------------------------------------------------------------
+# 推理内核自检（防 torch / MPS / SDPA 内核回归）
+# --------------------------------------------------------------------------
+
+# 自检序列长度：覆盖长序列路径（历史上 MPS SDPA 在 seq>16 才走分块/长序列
+# 分支），且足够短（毫秒级）不拖慢启动。
+SELFTEST_SEQ_LENS = (17, 24, 32)
+# 自检通过的相对误差阈值；正确实现应 ≲0.01（bf16 舍入），内核 bug 时可达 1e+0。
+SELFTEST_MAX_REL_ERR = 0.05
+SELFTEST_HEADS = 4
+# 必须与真实模型 config 的 head_dim 一致（Qwen3-Embedding-0.6B: head_dim=128）。
+# 实测 torch 2.14.1 的 MPS bf16 SDPA 在 head_dim ∈ {8,16} 且 seq>16 时仍给出
+# 错误结果（rel_err≈1.18），但 head_dim=32/64/128/256 正常；本模型走 128，
+# 因此自检用真实 head_dim，避免把无关的内核缺口当成生产故障误报。
+SELFTEST_HEAD_DIM = 128
+
+
+def _reference_causal_attention(torch: Any, q: Any, k: Any, v: Any) -> Any:
+    """独立基准：用 matmul + 显式 causal mask + softmax 手算注意力。
+
+    刻意**不走** ``F.scaled_dot_product_attention``——自检要和被测内核比对，
+    基准与被测不能是同一个实现（否则内核坏了两边一起错，差值恒为 0）。
+    """
+    scale = q.shape[-1] ** -0.5
+    scores = torch.matmul(q, k.transpose(-1, -2)) * scale
+    seq = q.shape[-2]
+    mask = torch.tril(torch.ones(seq, seq, dtype=torch.bool, device=q.device))
+    scores = scores.masked_fill(~mask, float("-inf"))
+    return torch.matmul(torch.softmax(scores, dim=-1), v)
+
+
+def run_kernel_selftest(torch: Any, device: str, dtype: Any) -> dict[str, Any]:
+    """对比生产配置（device+dtype，SDPA causal）与独立 CPU fp32 基准的输出。
+
+    对 ``SELFTEST_SEQ_LENS`` 每个长度：固定种子生成 Q/K/V（head_dim 与真实
+    模型一致），分别在
+      (a) 生产配置（如 mps+bfloat16）上走 ``F.scaled_dot_product_attention``；
+      (b) CPU fp32 上手算 causal attention（``_reference_causal_attention``）
+    再回到 CPU fp32 比较相对误差，取各长度最大值。
+
+    这样任何「设备 / 精度 / 内核」回归都能在启动时暴露，而不是等向量全错
+    （历史教训：探活永远正常，实际向量全错）。
+
+    只依赖 ``torch``，不加载模型，毫秒级；失败不抛异常，返回结构化结果。
+    """
+    started = time.perf_counter()
+    results: list[dict[str, Any]] = []
+    result: dict[str, Any] = {
+        "status": "skipped",
+        "seq_lens": list(SELFTEST_SEQ_LENS),
+        "head_dim": SELFTEST_HEAD_DIM,
+        "device": device,
+        "dtype": str(dtype).replace("torch.", ""),
+        "max_rel_err": None,
+        "per_seq": results,
+        "threshold": SELFTEST_MAX_REL_ERR,
+    }
+    try:
+        for seq_len in SELFTEST_SEQ_LENS:
+            torch.manual_seed(20261020)
+            shape = (1, SELFTEST_HEADS, seq_len, SELFTEST_HEAD_DIM)
+            q_cpu = torch.randn(*shape, dtype=torch.float32)
+            k_cpu = torch.randn(*shape, dtype=torch.float32)
+            v_cpu = torch.randn(*shape, dtype=torch.float32)
+
+            expected = _reference_causal_attention(torch, q_cpu, k_cpu, v_cpu)
+
+            produced = torch.nn.functional.scaled_dot_product_attention(
+                q_cpu.to(device=device, dtype=dtype),
+                k_cpu.to(device=device, dtype=dtype),
+                v_cpu.to(device=device, dtype=dtype),
+                is_causal=True,
+            )
+            if device == "mps":
+                torch.mps.synchronize()
+            produced_cpu = produced.to(device="cpu", dtype=torch.float32)
+
+            diff = (produced_cpu - expected).abs().max().item()
+            scale = expected.abs().max().item() or 1.0
+            rel_err = diff / scale
+            results.append({"seq_len": seq_len, "rel_err": round(rel_err, 6)})
+
+        worst = max(item["rel_err"] for item in results)
+        result["max_rel_err"] = round(worst, 6)
+        result["status"] = "ok" if worst <= SELFTEST_MAX_REL_ERR else "failed"
+    except Exception as exc:  # noqa: BLE001 —— 自检失败不能影响服务
+        result["status"] = "error"
+        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+
+    result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    if result["status"] == "ok":
+        LOGGER.info(
+            "推理内核自检通过：device=%s dtype=%s seq=%s head_dim=%d max_rel_err=%.6f 耗时=%.1fms",
+            result["device"],
+            result["dtype"],
+            "/".join(str(item["seq_len"]) for item in results),
+            result["head_dim"],
+            result["max_rel_err"],
+            result["elapsed_ms"],
+        )
+    elif result["status"] == "failed":
+        LOGGER.error(
+            "推理内核自检失败：device=%s dtype=%s head_dim=%d max_rel_err=%s（逐长度 %s）"
+            " 超过阈值 %.3f。该设备/精度组合的注意力内核可能有问题，向量结果不可信；"
+            " 请尝试 --device cpu 或改回 float32 后复测。",
+            result["device"],
+            result["dtype"],
+            result["head_dim"],
+            result["max_rel_err"],
+            ", ".join(f"seq{item['seq_len']}={item['rel_err']}" for item in results),
+            SELFTEST_MAX_REL_ERR,
+        )
+    else:
+        LOGGER.error("推理内核自检异常：%s", result.get("error"))
+    return result
 
 
 def _read_prompts(model_dir: Path) -> tuple[str, str]:
@@ -230,6 +376,7 @@ class LocalEmbedder:
         self.dim = dim
         self.device = "unknown"
         self.dtype_name = "unknown"
+        self._dtype: Any = None
         self.query_prefix, self.document_prefix = _read_prompts(self.model_dir)
 
         self._torch: Any = None
@@ -240,6 +387,8 @@ class LocalEmbedder:
         self.error: dict[str, str] | None = None
         self.load_seconds: float | None = None
         self.loaded_at: str | None = None
+        # 推理内核自检结果（启动时算一次，随 /health 暴露，不阻止服务启动）
+        self.selftest: dict[str, Any] | None = None
 
     # -- 生命周期 --
 
@@ -264,6 +413,7 @@ class LocalEmbedder:
 
         self._ready = True
         self.error = None
+        self.selftest = run_kernel_selftest(self._torch, self.device, self._dtype)
         self.load_seconds = round(time.perf_counter() - started, 2)
         self.loaded_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         LOGGER.info(
@@ -284,9 +434,9 @@ class LocalEmbedder:
         if not self.model_dir.is_dir():
             raise FileNotFoundError(f"模型目录不存在：{self.model_dir}")
 
-        disabled = _disable_broken_optional_deps()
-        if disabled:
-            LOGGER.info("已屏蔽不可用的可选依赖：%s", ", ".join(disabled))
+        shielded = _shield_broken_optional_deps()
+        if shielded:
+            LOGGER.info("已屏蔽不可用的可选依赖：%s", ", ".join(shielded))
 
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
@@ -300,6 +450,7 @@ class LocalEmbedder:
 
         self.device = self._resolve_device(torch)
         dtype = torch.bfloat16 if self.device == "mps" else torch.float32
+        self._dtype = dtype
         self.dtype_name = str(dtype).replace("torch.", "")
 
         self._tokenizer = AutoTokenizer.from_pretrained(
@@ -343,7 +494,12 @@ class LocalEmbedder:
     # -- 对外接口 --
 
     def health(self) -> dict[str, Any]:
-        """``GET /health`` 的响应体；加载失败时附带结构化 error（HTTP 503）。"""
+        """``GET /health`` 的响应体；加载失败时附带结构化 error（HTTP 503）。
+
+        ``selftest`` 为启动时推理内核自检的结论：``ok`` / ``failed`` / ``error``
+        / ``skipped``。``failed`` 时 /health 仍返回 200（服务可用但结果可疑），
+        由该字段与 ERROR 日志显著暴露问题。
+        """
         body: dict[str, Any] = {
             "status": "ok" if self._ready else "error",
             "model": self.model_name,
@@ -351,10 +507,14 @@ class LocalEmbedder:
             "device": self.device,
             "model_path": str(self.model_dir),
             "backend": "transformers",
+            "selftest": self.selftest["status"] if self.selftest else "skipped",
         }
         if self._ready:
+            body["dtype"] = self.dtype_name
             body["load_seconds"] = self.load_seconds
             body["loaded_at"] = self.loaded_at
+            if self.selftest:
+                body["selftest_detail"] = self.selftest
         else:
             body["error"] = self.error or {
                 "type": "ModelNotLoaded",
@@ -362,6 +522,20 @@ class LocalEmbedder:
                 "model_path": str(self.model_dir),
             }
         return body
+
+    def models(self) -> dict[str, Any]:
+        """``GET /v1/models`` 的响应体（OpenAI 格式，供客户端/LangChain 探测）。"""
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": self.model_name,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "local",
+                }
+            ],
+        }
 
     def embed(self, texts: list[str], input_type: str = "document") -> EmbeddingResult:
         """批量向量化：右侧 padding + attention_mask 定位末 token + L2 归一化。"""
@@ -459,14 +633,28 @@ class EmbeddingHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_error_body(
-        self, status: int, message: str, *, param: str | None = None, code: str = "invalid_request"
+        self,
+        status: int,
+        message: str,
+        *,
+        param: str | None = None,
+        code: str = "invalid_request",
+        error_type: str = "invalid_request_error",
     ) -> None:
+        """发送错误响应。
+
+        **一律关闭连接**：非 200 分支通常没有消费请求体（未知路径 / 方法不符
+        / 提前拒绝），keep-alive 复用同连接时残留 body 会被当成下一个请求行，
+        造成 400/501 串包（P2-1 实测：POST /nope 后同连接 GET /health 得到
+        501 与残缺 HTML）。错误响应本身就是例外路径，断开连接代价可忽略。
+        """
+        self.close_connection = True
         self._send_json(
             status,
             {
                 "error": {
                     "message": message,
-                    "type": "invalid_request_error",
+                    "type": error_type,
                     "param": param,
                     "code": code,
                 }
@@ -506,9 +694,15 @@ class EmbeddingHTTPHandler(BaseHTTPRequestHandler):
             body = embedder.health()
             status = 200 if body.get("status") == "ok" else 503
             self._send_json(status, body)
+            if status != 200:
+                self.close_connection = True
             return
-        if path in ("/v1/embeddings", "/v1/models"):
-            self._send_error_body(405, f"{path} 只接受 POST", code="method_not_allowed")
+        if path == "/v1/models":
+            # OpenAI 语义：GET /v1/models 列模型（客户端与 LangChain 常探测）
+            self._send_json(200, self.embedder.models())
+            return
+        if path == "/v1/embeddings":
+            self._send_error_body(405, "/v1/embeddings 只接受 POST", code="method_not_allowed")
             return
         self._send_error_body(404, f"未知路径：{path}", code="not_found")
 
@@ -516,6 +710,9 @@ class EmbeddingHTTPHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/health":
             self._send_error_body(405, "/health 只接受 GET", code="method_not_allowed")
+            return
+        if path == "/v1/models":
+            self._send_error_body(405, "/v1/models 只接受 GET", code="method_not_allowed")
             return
         if path != "/v1/embeddings":
             self._send_error_body(404, f"未知路径：{path}", code="not_found")
@@ -531,18 +728,23 @@ class EmbeddingHTTPHandler(BaseHTTPRequestHandler):
             request = parse_embedding_request(self._parse_json(raw))
             result = embedder.embed(request.texts, request.input_type)
         except EmbeddingRequestError as exc:
-            # 请求体可能未被完整消费，关闭连接避免 keep-alive 串包
-            self.close_connection = True
             LOGGER.warning("embeddings 请求非法：%s", exc.message)
             self._send_error_body(400, exc.message, param=exc.param, code=exc.code)
             return
         except EmbeddingUnavailable as exc:
             LOGGER.error("embeddings 不可用：%s", exc)
-            self._send_error_body(503, str(exc), code="model_unavailable")
+            self._send_error_body(
+                503, str(exc), code="model_unavailable", error_type="service_unavailable"
+            )
             return
         except Exception as exc:  # noqa: BLE001 —— 推理异常也必须结构化返回
             LOGGER.exception("embeddings 推理失败")
-            self._send_error_body(500, f"{type(exc).__name__}: {exc}", code="internal_error")
+            self._send_error_body(
+                500,
+                f"{type(exc).__name__}: {exc}",
+                code="internal_error",
+                error_type="server_error",
+            )
             return
 
         assert request is not None  # 只有成功解析的请求才会走到这里
