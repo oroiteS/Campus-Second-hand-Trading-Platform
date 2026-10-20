@@ -1,32 +1,44 @@
-# React + TypeScript + Vite
+# campus_frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+校园二手交易平台前端：React 19 + TypeScript（strict）+ Vite + antd 6 + zustand + axios + react-router-dom 7。
 
-Currently, two official plugins are available:
+## 常用命令
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+pnpm install   # 恢复 lockfile 依赖（禁止安装新包）
+pnpm gen:api   # 由 ../docs/api/openapi.yaml 生成 src/api/types.ts（契约类型唯一来源）
+pnpm lint      # oxlint
+pnpm build     # tsc -b && vite build
+pnpm dev       # dev server（vite.config.ts 固定 127.0.0.1:5180，代理 /api 与 /socket.io）
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## 环境变量
+
+复制 `.env.example` 为 `.env`（不入 git）：
+
+| 变量 | 作用域 | 说明 |
+| --- | --- | --- |
+| `VITE_USE_MOCK` | 构建期 | `true` 走 `src/api/mock/` 契约同构假数据；`false`/留空走真实接口 |
+| `VITE_API_BASE` | 构建期 | axios 的 `baseURL`，**含 `/api` 后缀**。留空 = 同源 `/api`（dev 下经 vite 代理）；跨域直连填 `http://host:port/api`。**不要填纯主机地址**（会缺 `/api` 前缀） |
+| `VITE_PROXY_TARGET` | 仅 dev server | `/api` 与 `/socket.io` 的代理目标，默认 `http://127.0.0.1:5010`；不进入构建产物 |
+
+两者语义独立、不可混用：`VITE_API_BASE` 决定浏览器**请求发往哪里**（会被打进产物），
+`VITE_PROXY_TARGET` 只决定 dev server **把 `/api` 转发到哪里**。dev 联调的推荐姿势是
+`VITE_API_BASE` 留空（走同源 `/api`）+ `VITE_PROXY_TARGET` 指向后端。
+
+dev server 显式绑定 `127.0.0.1:5180`（`server.host: '127.0.0.1'`），联调一律使用 `127.0.0.1` 字面地址。
+开启 `strictPort: true`：5180 被占用时启动直接失败，不静默漂移到 5181，避免联调按固定端口连错进程。
+
+### 联调注意（必读）
+
+- **联调前须把 `VITE_USE_MOCK` 置 `false` 或留空**。模板默认为 `true`（只服务契约未就绪的开发期），
+  忘记关会导致页面看似正常但全程走 `src/api/mock/` 假数据，联调结论无效。
+- 推荐姿势：`VITE_USE_MOCK=false` + `VITE_API_BASE` 留空（同源 `/api`）+ `VITE_PROXY_TARGET` 指向目标后端。
+
+## 目录与纪律
+
+- 请求只经 `src/api/`；组件/页面禁止 `fetch` / `axios`
+- 契约类型只来自生成物 `src/api/types.ts`；`src/types/` 仅 re-export
+- 设计令牌统一定义于 `src/styles/tokens.css`；antd 主题经 `ConfigProvider` 对齐
+- 路由表与四态守卫（游客 / 未认证 / 认证学生 / 管理员）集中在 `src/router/`
+- 规范基线见 `docs/plan/frontend/00-骨架与契约.md`（效力最高的端内总纲）

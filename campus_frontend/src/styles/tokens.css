@@ -1,0 +1,129 @@
+/**
+ * 设计令牌（唯一色彩/间距/字号/圆角/阴影/过渡来源）
+ *
+ * 规则：
+ * - 组件与页面一律使用 var(--*)，禁止硬编码色值与魔法间距。
+ * - antd 主题经 ConfigProvider 对齐（见 src/styles/theme.ts，保持与本文件同步）。
+ * - 断点（媒体查询无法消费自定义属性，约定为常量）：
+ *   移动优先，320px 起可用；--bp-md: 768px；--bp-lg: 1024px。
+ * - 暗色模式经 prefers-color-scheme 覆盖同名令牌。
+ */
+:root {
+  /* ---- 色彩 · 品牌 ---- */
+  --color-primary: #2f54eb; /* 品牌靛蓝，对白底对比度 5.85:1 */
+  --color-primary-hover: #1d39c4;
+  --color-primary-active: #10239e;
+  --color-on-primary: #ffffff;
+  --color-primary-bg: #f0f5ff;
+
+  /* ---- 色彩 · 文本 ---- */
+  --color-text: #1f2937;
+  --color-text-secondary: #4b5563;
+  --color-text-disabled: #9ca3af;
+  --color-on-brand: #ffffff;
+
+  /* ---- 色彩 · 表面与边框 ---- */
+  --color-surface: #ffffff;
+  --color-surface-variant: #f5f6f8;
+  --color-page-bg: #f0f2f5;
+  --color-border: #e5e7eb;
+  --color-border-strong: #d1d5db;
+
+  /* ---- 色彩 · 语义 ---- */
+  --color-success: #15803d;
+  --color-success-bg: #f0fdf4;
+  --color-warning: #b45309;
+  --color-warning-bg: #fffbeb;
+  --color-error: #b91c1c;
+  --color-error-bg: #fef2f2;
+  --color-info: #1d4ed8;
+  --color-info-bg: #eff6ff;
+
+  /* ---- 焦点环 ---- */
+  --color-focus: #2f54eb;
+  --focus-outline: 2px solid var(--color-focus);
+  --focus-offset: 2px;
+
+  /* ---- 间距（8px 基，半步 4px） ---- */
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.5rem; /* 24px */
+  --space-6: 2rem; /* 32px */
+  --space-8: 3rem; /* 48px */
+  --space-10: 4rem; /* 64px */
+
+  /* ---- 字号阶 ---- */
+  --text-xs: 0.75rem; /* 12px */
+  --text-sm: 0.875rem; /* 14px */
+  --text-base: 1rem; /* 16px */
+  --text-lg: 1.125rem; /* 18px */
+  --text-xl: 1.25rem; /* 20px */
+  --text-2xl: 1.5rem; /* 24px */
+  --text-3xl: 1.875rem; /* 30px */
+
+  /* ---- 字体与行高 ---- */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Consolas, monospace;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+
+  /* ---- 圆角 ---- */
+  --radius-sm: 0.25rem; /* 4px */
+  --radius-md: 0.5rem; /* 8px */
+  --radius-lg: 0.75rem; /* 12px */
+  --radius-full: 9999px;
+
+  /* ---- 阴影 ---- */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 6px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 10px 15px rgba(15, 23, 42, 0.1);
+
+  /* ---- 过渡时长 ---- */
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+  --transition-slow: 300ms ease;
+
+  /* ---- 布局 ---- */
+  --container-max: 75rem; /* 1200px 内容最大宽度 */
+  --touch-target: 2.75rem; /* 44px 触控目标最小尺寸 */
+}
+
+/* ---- 暗色模式（令牌同名覆盖） ---- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-primary: #7c8ff5;
+    --color-primary-hover: #96a4f7;
+    --color-primary-active: #6273f0;
+    --color-on-primary: #101632;
+    --color-primary-bg: #1b2140;
+
+    --color-text: #f3f4f6;
+    --color-text-secondary: #cbd2dd;
+    --color-text-disabled: #6b7280;
+
+    --color-surface: #1a1d26;
+    --color-surface-variant: #232734;
+    --color-page-bg: #14161d;
+    --color-border: #333849;
+    --color-border-strong: #464d63;
+
+    --color-success: #6ee7a0;
+    --color-success-bg: #10241a;
+    --color-warning: #fbbf6b;
+    --color-warning-bg: #2a1f0e;
+    --color-error: #f79c9c;
+    --color-error-bg: #2c1416;
+    --color-info: #93b4fb;
+    --color-info-bg: #14203c;
+
+    --color-focus: #96a4f7;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+  }
+}
