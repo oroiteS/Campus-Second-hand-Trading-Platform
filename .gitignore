@@ -114,3 +114,7 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+# embedding model 
+qwen3_embedding_0_6b/
+
