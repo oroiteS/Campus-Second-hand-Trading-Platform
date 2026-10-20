@@ -64,14 +64,18 @@
 
 .user-layout__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   margin-inline-start: auto;
+  min-width: 0;
 }
 
 .user-layout__user {
   color: var(--color-text-secondary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .user-layout__login {

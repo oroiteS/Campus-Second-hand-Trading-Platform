@@ -10,7 +10,7 @@
  */
 :root {
   /* ---- 色彩 · 品牌 ---- */
-  --color-primary: #2f54eb; /* 品牌靛蓝，对白底对比度 6.0:1 */
+  --color-primary: #2f54eb; /* 品牌靛蓝，对白底对比度 5.85:1 */
   --color-primary-hover: #1d39c4;
   --color-primary-active: #10239e;
   --color-on-primary: #ffffff;
