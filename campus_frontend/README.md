@@ -1,32 +1,30 @@
-# React + TypeScript + Vite
+# campus_frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+校园二手交易平台前端：React 19 + TypeScript（strict）+ Vite + antd 6 + zustand + axios + react-router-dom 7。
 
-Currently, two official plugins are available:
+## 常用命令
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+pnpm install   # 恢复 lockfile 依赖（禁止安装新包）
+pnpm gen:api   # 由 ../docs/api/openapi.yaml 生成 src/api/types.ts（契约类型唯一来源）
+pnpm lint      # oxlint
+pnpm build     # tsc -b && vite build
+pnpm dev       # dev server（vite.config.ts 固定端口 5180，代理 /api 与 /socket.io）
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## 环境变量
+
+复制 `.env.example` 为 `.env`（不入 git）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `VITE_USE_MOCK` | `true` 走 `src/api/mock/` 契约同构假数据 |
+| `VITE_API_BASE` | API 地址；留空走 vite 代理（同源 `/api`） |
+
+## 目录与纪律
+
+- 请求只经 `src/api/`；组件/页面禁止 `fetch` / `axios`
+- 契约类型只来自生成物 `src/api/types.ts`；`src/types/` 仅 re-export
+- 设计令牌统一定义于 `src/styles/tokens.css`；antd 主题经 `ConfigProvider` 对齐
+- 路由表与四态守卫（游客 / 未认证 / 认证学生 / 管理员）集中在 `src/router/`
+- 规范基线见 `docs/plan/frontend/00-骨架与契约.md`（效力最高的端内总纲）
