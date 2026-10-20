@@ -1,6 +1,6 @@
 # 校园二手交易平台 · WebSocket 事件契约
 
-_版本 v0.1.0（批次 0：连接规范与事件总表）· 基线：[需求分析](../需求分析.md) v1.0 · 配套：[openapi.yaml](openapi.yaml) · [CHANGELOG](CHANGELOG.md)_
+_版本 v0.1.0（批次 0：连接规范与事件总表）· 基线：[需求分析](../需求分析.md) v1.1 · 配套：[openapi.yaml](openapi.yaml) · [CHANGELOG](CHANGELOG.md)_
 
 ---
 
