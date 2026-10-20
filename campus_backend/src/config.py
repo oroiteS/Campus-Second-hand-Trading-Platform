@@ -28,14 +28,51 @@ def _env_str(key: str, default: str = "") -> str:
     return default if value is None else value
 
 
+def _strip_inline_comment(raw: str) -> str:
+    """剥离 ``#`` 起的行内注释并去空白。
+
+    只用于数值 / 布尔这类「取值里不可能含 #」的变量；字符串型变量（密钥、
+    密码、URI）不走这里，避免把合法的 ``#`` 当注释吃掉。
+    """
+    return raw.split("#", 1)[0].strip()
+
+
 def _env_int(key: str, default: int) -> int:
     raw = os.getenv(key)
-    if raw is None or raw == "":
+    if raw is None:
+        return default
+    value = _strip_inline_comment(raw)
+    if value == "":
         return default
     try:
-        return int(raw)
+        return int(value)
     except ValueError:
         return default
+
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    """布尔型环境变量；无法识别的取值回退默认值（笔误不应导致启动失败）。
+
+    兼容两种写法：``true`` 与带行内注释的 ``true # 说明``。``python-dotenv``
+    对不带引号的值会把 ``#`` 之后的内容原样保留，若不做剥离，
+    ``EMBEDDING_LOCAL_ENABLED=true # false=...`` 会被当成未知值而回落到默认，
+    行为与字面相反。
+    """
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    normalized = _strip_inline_comment(raw).lower()
+    if normalized == "":
+        return default
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    return default
 
 
 _UPLOAD_DIR_RAW = _env_str("UPLOAD_DIR", "uploads")
@@ -87,11 +124,18 @@ class Config:
     CHROMA_PORT = _env_int("CHROMA_PORT", 8000)
     CHROMA_COLLECTION_SUFFIX = _env_str("CHROMA_COLLECTION_SUFFIX", "")
 
-    # ---- Embedding（OpenAI 兼容端点；批次 0 仅云端模式）----
+    # ---- Embedding（OpenAI 兼容端点；云端优先、本地侧车兜底的双模）----
     EMBEDDING_BASE_URL = _env_str("EMBEDDING_BASE_URL", "")
     EMBEDDING_API_KEY = _env_str("EMBEDDING_API_KEY", "")
     EMBEDDING_MODEL = _env_str("EMBEDDING_MODEL", "")
     EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 1024)
+
+    # ---- 本地 Embedding 侧车（tools/local_embedding，OpenAI 兼容，默认 8010）----
+    # 云端不可用时按 EMBEDDING_LOCAL_ENABLED 决定是否降级到本地；三者
+    # 均非敏感信息，可入 .env 与文档。
+    EMBEDDING_LOCAL_BASE_URL = _env_str("EMBEDDING_LOCAL_BASE_URL", "http://127.0.0.1:8010/v1")
+    EMBEDDING_LOCAL_MODEL = _env_str("EMBEDDING_LOCAL_MODEL", "qwen3_embedding_0_6b")
+    EMBEDDING_LOCAL_ENABLED = _env_bool("EMBEDDING_LOCAL_ENABLED", True)
 
     # ---- 上传 ----
     UPLOAD_DIR = str(_UPLOAD_PATH if _UPLOAD_PATH.is_absolute() else BASE_DIR / _UPLOAD_PATH)

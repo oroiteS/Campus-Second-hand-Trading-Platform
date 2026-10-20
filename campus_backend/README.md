@@ -45,6 +45,54 @@ uv run python main.py          # host/port 来自 .env（HOST 固定 127.0.0.1�
 - `GET /api/openapi.json` —— 契约原文的 JSON 序列化
 - `GET /api/docs` —— Swagger UI（flask-swagger-ui，离线静态资源）
 
+## Embedding 双模（云端优先、本地侧车兜底）
+
+Embedding 端点有两种生效模式，`/api/health` 的 `data.embedding.mode` 如实上报：
+
+| 场景 | mode | model | status | 整体 status |
+| --- | --- | --- | --- | --- |
+| 云端可用 | `cloud` | `EMBEDDING_MODEL` | `up` | `ok` |
+| 云端不可用、本地侧车可用 | `local` | `EMBEDDING_LOCAL_MODEL` | `up` | `ok` |
+| 都不可用（或本地被禁用） | `null` | `EMBEDDING_MODEL` | `down` | `degraded` |
+
+判定顺序固定为 **cloud → local → down**：先探云端（5s 超时），失败且
+`EMBEDDING_LOCAL_ENABLED=true` 时才探本地侧车；两者都失败仍 **HTTP 200**，
+只让 `data.status = degraded`。云端失败必落 WARNING 日志（仅原因摘要，不含凭据）。
+
+云端配置不全（`EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL`
+任一为空）时**直接判为云端不可用且不发任何请求**：`OpenAI(base_url="")` 会
+隐式回落到官方 `https://api.openai.com/v1`，若 key 非空则凭据外泄。
+
+**探活耗时**：两跳是串行的，云端正常时是数十 ms ~1s；**云端地址不可达时要等
+满 5s 超时才会去探本地**，再叠加本地耗时（本地 15s 超时）。最坏
+（云不可达 + 本地不可达）≈20s。健康检查调用方请按 ≥20s 设超时。
+
+本地侧车是**独立进程**（torch/MPS 与后端运行时不同），位于仓库根
+`tools/local_embedding/`，后端只经 HTTP（OpenAI 兼容）调用它：
+
+```bash
+# 仓库根执行（首次加载模型约 3s，默认监听 127.0.0.1:8010）
+~/my/torch_python/.venv/bin/python tools/local_embedding/server.py
+curl -s http://127.0.0.1:8010/health | python3 -m json.tool
+# → status=ok, dim=1024, device=mps, selftest=ok
+```
+
+侧车 `/health` 的 `selftest` 字段是启动时的**推理内核自检**结论
+（`ok` / `failed` / `error` / `skipped`）。`failed` 表示该设备/精度的注意力内核
+算出错误结果、向量不可信——此时后端探活仍会显示 `mode=local/status=up`
+（HTTP 层确实通了），排障请以侧车 `/health` 与日志为准。
+
+后端 `.env` 对应三项（`.env.example` 已含模板）：
+
+```dotenv
+EMBEDDING_LOCAL_BASE_URL=http://127.0.0.1:8010/v1
+EMBEDDING_LOCAL_MODEL=qwen3_embedding_0_6b
+EMBEDDING_LOCAL_ENABLED=true
+```
+
+启动方式、API 细节、`input_type` 查询前缀、常见问题见
+[`tools/local_embedding/README.md`](../tools/local_embedding/README.md)。
+
 ## 测试与 Lint
 
 ```bash
