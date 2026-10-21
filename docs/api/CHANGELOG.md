@@ -18,6 +18,22 @@ _记录 `docs/api/` 下全部契约变更（[openapi.yaml](openapi.yaml) · [web
 
 ---
 
+## [0.2.0] - 2026-10-20 · 批次 1 · both
+
+- 操作人：b1api（契约增量任务 agent，分支 `feat/api/b1-user-domain`；规格：[01-用户域](../plan/01-用户域.md)「契约增量全案」节）
+- 变更摘要：
+  - 新增 `openapi.yaml` 用户域接口 12 个（`paths:`）：auth 4——`POST /auth/register`、`POST /auth/login`、`POST /auth/logout`（Redis 故障时降级返回 `degraded` 结构）、`POST /auth/password/reset`（凭证不匹配与用户名不存在一律 `422 / 2004`，防探测）；users 4——`GET|PUT /users/me`、`PUT /users/me/password`、`POST /users/me/avatar`（multipart）；certification 2——`POST /certification/applications`（multipart）、`GET /certification/applications/mine`（不分页，个人历史申请量小）；schools 1——`GET /schools`（公开、仅启用、含校区、不分页）；images 1——`GET /images/{id}`（实体二进制不走 envelope；`student_card` 仅本人与管理员可读，越权/不存在一律 `404 / 9002`）。
+  - 新增业务错误码 20xx 段六码并写入 `info.description` 错误码表：2001 用户名已存在（409）/ 2002 学号已被注册（409）/ 2003 原密码错误（400）/ 2004 重置凭证不匹配（422）/ 2005 用户名或密码错误（401）/ 2006 账号已被封禁（403）。
+  - 新增 `components/schemas`：响应数据 `UserProfile` / `LoginData` / `AuthApplication` / `SchoolWithCampuses`；请求体 `RegisterInput` / `LoginInput` / `PasswordResetInput` / `ProfileUpdateInput` / `PasswordChangeInput`（`username` / `password` / `phone` 等校验 pattern 双端同源落入 schema）。
+  - 新增 `tags`：`auth` / `users` / `certification` / `schools` / `images`。
+  - 修订文档级遗留：规范引用 v0.4 → v0.5；错误码表 20xx 行由「批次 1 定义」具体化为六码并补「20xx 段为本版本新增」说明；标签规划行标注批次 1 已建立用户域部分（`images` 商品图用途批次 2 扩展）；`bearerAuth` 描述改为「由 `POST /api/auth/login` 签发」；`ImageRef` 描述改为「见 `GET /api/images/{id}`」；`UserSummary.credit_score` 描述补「批次 3 起有评价后非空」。
+- 影响说明：
+  - 双端共同：本版本即 b1 双端开发基线，契约冻结为 0.2.0（记入看板「契约冻结版本」列）；任一端发现契约缺陷 → 停手上报契约修订任务（`feat/api/b1-<主题>`，代号 `b1api2`），不得私改。
+  - 前端：重新生成 `src/api/types.ts` 并同步契约同构 mock（登录 / 注册 / 找回密码 / 认证提交与状态 / 个人中心）。
+  - 后端：按冻结契约实现用户域 12 接口（bcrypt 存储纪律、上传四件套、jti 黑名单与登录限流、学生证照片访问控制）。
+
+---
+
 ## [0.1.0] - 2026-10-20 · 批次 0 · both
 
 - 操作人：主 agent（契约基线建立会话，经用户确认范围：仅批次 0；错误码采用分段业务码方案）
