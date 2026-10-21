@@ -12,6 +12,7 @@ from flask_migrate import Migrate
 from werkzeug.exceptions import HTTPException
 
 from src.common import responses
+from src.common.auth import inject_scope, register_jwt_hooks
 from src.common.errors import ApiError, ErrorCode, map_http_status
 from src.config import get_config_class
 from src.model import db
@@ -30,6 +31,8 @@ def create_app(config_object: object = None) -> Flask:
     Migrate().init_app(app, db, version_table=f"{app.config['DB_TABLE_PREFIX']}alembic_version")
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     _configure_jwt(JWTManager(app))
+    # 每请求进入即注入同校作用域上下文（g.school_id / g.scope_all）
+    app.before_request(inject_scope)
 
     register_routes(app)
     _register_error_handlers(app)
@@ -37,7 +40,12 @@ def create_app(config_object: object = None) -> Flask:
 
 
 def _configure_jwt(jwt: JWTManager) -> None:
-    """JWT 校验错误统一转契约 envelope（1001/1002/1003；受保护接口自批次 1 落地）。"""
+    """JWT 校验错误统一转契约 envelope（1001/1002/1003）。
+
+    外加 jti 黑名单检查（common.auth.register_jwt_hooks：Redis 故障
+    fail-open 放行 + 告警日志，与降级决策一致）。
+    """
+    register_jwt_hooks(jwt)
 
     @jwt.expired_token_loader
     def _expired_token(_jwt_header, _payload):
