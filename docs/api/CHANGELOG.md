@@ -18,7 +18,7 @@ _记录 `docs/api/` 下全部契约变更（[openapi.yaml](openapi.yaml) · [web
 
 ---
 
-## [0.2.0] - 2026-10-20 · 批次 1 · both
+## [0.2.0] - 2026-10-21 · 批次 1 · both
 
 - 操作人：b1api（契约增量任务 agent，分支 `feat/api/b1-user-domain`；规格：[01-用户域](../plan/01-用户域.md)「契约增量全案」节）
 - 变更摘要：
