@@ -101,12 +101,35 @@ def register(payload: dict) -> User:
     return user
 
 
+# 唯一冲突识别 token（整词精确匹配，不做子串判断）。约束名不随
+# DB_TABLE_PREFIX 参数化（MySQL 索引名仅要求表内唯一，跨表重名合法），
+# token 与前缀无关。各方言报文形态（取 ``exc.orig`` 方言原生消息；
+# ``str(exc)`` 会拼接 SQL 与参数，其中的列名清单会污染文本匹配）：
+# - MySQL 8.0.19+：``Duplicate entry '<值>' for key '<表>.<约束名>'``
+#   （worktree 如 ``b1be-users.uk_student_no``）；
+# - SQLite：``UNIQUE constraint failed: <表>.<列名>``（无约束名，按列识别）。
+# token 前后紧邻 [A-Za-z0-9_-] 即不视为命中，因此值里偶然出现
+# ``student_no`` 子串（如 username "a_student_no"）不再误判来源。
+_STUDENT_NO_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:uk_student_no|student_no)(?![A-Za-z0-9_-])"
+)
+_USERNAME_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:uk_username|username)(?![A-Za-z0-9_-])"
+)
+
+
 def _unique_conflict(exc: IntegrityError) -> ApiError:
-    """按唯一约束名/列名区分竞态冲突来源（uk_username / uk_student_no）。"""
-    text = str(exc).lower()
-    if "uk_student_no" in text or "student_no" in text:
+    """按唯一约束名/列名整词匹配区分竞态冲突来源（uk_username / uk_student_no）。
+
+    未识别的 IntegrityError 维持既有兜底口径：USERNAME_TAKEN。
+    """
+    orig = exc.orig
+    text = (str(orig) if orig is not None else str(exc)).lower()
+    if _STUDENT_NO_TOKEN_RE.search(text):
         return ApiError(ErrorCode.STUDENT_NO_TAKEN)
-    return ApiError(ErrorCode.USERNAME_TAKEN)
+    if _USERNAME_TOKEN_RE.search(text):
+        return ApiError(ErrorCode.USERNAME_TAKEN)
+    return ApiError(ErrorCode.USERNAME_TAKEN)  # 未识别：保持原兜底
 
 
 # ---- 登录 ----

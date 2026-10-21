@@ -1,9 +1,12 @@
 """auth 域测试：注册 / 登录 / 登出 / 密码重置（契约 0.2.0 行为与错误码）。"""
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
+from src.common.errors import ErrorCode
 from src.common.security import verify_password
 from src.model import User, db
+from src.services import auth_service
 from tests.conftest import DEFAULT_PASSWORD
 
 REGISTER_URL = "/api/auth/register"
@@ -77,6 +80,7 @@ class TestRegister:
         res = _register(client, username="other01")
         assert (res.status_code, _body(res)["code"]) == (409, 2002)
 
+
     @pytest.mark.parametrize(
         "bad_password",
         ["abc1", "noupperc", "12345678", "abcdefgh"],
@@ -103,6 +107,68 @@ class TestRegister:
     def test_non_object_body_9001(self, client, db_create_all):
         res = client.post(REGISTER_URL, json=[1, 2])
         assert (res.status_code, _body(res)["code"]) == (422, 9001)
+
+
+class TestUniqueConflictDetection:
+    """_unique_conflict 整词匹配约束名/列名：值含子串不再误判（竞态兜底）。"""
+
+    @staticmethod
+    def _integrity_error(message: str) -> IntegrityError:
+        return IntegrityError("INSERT INTO users ...", {}, Exception(message))
+
+    def test_mysql_value_containing_student_no_token_maps_2001(self):
+        """旧子串匹配的误报场景：值 a_student_no + 约束 uk_username → 2001。"""
+        exc = self._integrity_error(
+            '(pymysql.err.IntegrityError) (1062, "Duplicate entry \'a_student_no\' '
+            'for key \'users.uk_username\'")'
+        )
+        assert auth_service._unique_conflict(exc).error is ErrorCode.USERNAME_TAKEN
+
+    def test_mysql_prefixed_student_no_constraint_maps_2002(self):
+        """worktree 前缀表名不影响约束名识别：b1be-users.uk_student_no → 2002。"""
+        exc = self._integrity_error(
+            '(pymysql.err.IntegrityError) (1062, "Duplicate entry \'2024010101\' '
+            'for key \'b1be-users.uk_student_no\'")'
+        )
+        assert auth_service._unique_conflict(exc).error is ErrorCode.STUDENT_NO_TAKEN
+
+    def test_unrecognized_constraint_keeps_fallback_2001(self):
+        """未识别的 IntegrityError 维持既有兜底 USERNAME_TAKEN。"""
+        exc = self._integrity_error(
+            '(pymysql.err.IntegrityError) (1062, "Duplicate entry \'x\' '
+            'for key \'uk_other\'")'
+        )
+        assert auth_service._unique_conflict(exc).error is ErrorCode.USERNAME_TAKEN
+
+    @staticmethod
+    def _add_raw(username: str, student_no: str) -> None:
+        """绕过 service 直接造行，触发真实方言 IntegrityError。"""
+        db.session.add(User(
+            username=username,
+            student_no=student_no,
+            password_hash="x",
+            email=f"{username}@example.edu.cn",
+            nickname="n",
+            display_name="n",
+        ))
+
+    def test_real_sqlite_username_conflict_maps_2001(self, db_create_all):
+        """真实 SQLite 报文（列名形式，含前缀表名）→ 2001。"""
+        self._add_raw("dupx01", "20240001")
+        self._add_raw("dupx01", "20240002")
+        with pytest.raises(IntegrityError) as excinfo:
+            db.session.commit()
+        db.session.rollback()
+        assert auth_service._unique_conflict(excinfo.value).error is ErrorCode.USERNAME_TAKEN
+
+    def test_real_sqlite_student_no_conflict_maps_2002(self, db_create_all):
+        """真实 SQLite 报文（列名形式，含前缀表名）→ 2002。"""
+        self._add_raw("ua01", "20240999")
+        self._add_raw("ub01", "20240999")
+        with pytest.raises(IntegrityError) as excinfo:
+            db.session.commit()
+        db.session.rollback()
+        assert auth_service._unique_conflict(excinfo.value).error is ErrorCode.STUDENT_NO_TAKEN
 
 
 class TestLogin:
