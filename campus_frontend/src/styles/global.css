@@ -147,3 +147,26 @@ ol {
     padding: var(--space-8);
   }
 }
+
+/* ---- 表单字段通用（label 关联 / hint / 错误,各页面表单共用） ---- */
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.form-field__label {
+  font-weight: 600;
+}
+
+.form-field__hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.form-field__error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: var(--text-sm);
+}

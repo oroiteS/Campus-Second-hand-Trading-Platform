@@ -1,8 +1,25 @@
+.account-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+@media (min-width: 768px) {
+  .account-grid {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    align-items: start;
+  }
+}
+
 .account-panel {
   padding: var(--space-4);
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+.account-panel__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
 }
 
 .account-panel__intro {
@@ -36,6 +53,110 @@
   color: var(--color-text-secondary);
 }
 
+.account-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.account-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.account-mock-hint {
+  margin: 0;
+  grid-column: 1 / -1;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* ---- 资料卡 ---- */
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.profile-avatar {
+  flex-shrink: 0;
+  width: 4rem;
+  height: 4rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  object-fit: cover;
+}
+
+.profile-avatar--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-surface-variant);
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xl);
+}
+
+.profile-card__main {
+  min-width: 0;
+}
+
+.profile-card__display-name {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+  font-size: var(--text-lg);
+  overflow-wrap: break-word;
+}
+
+.profile-card__sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.profile-fields {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+}
+
+.profile-fields__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block: var(--space-1);
+  border-bottom: 1px dashed var(--color-border);
+}
+
+.profile-fields__row dt {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.profile-fields__row dd {
+  margin: 0;
+  text-align: end;
+  overflow-wrap: break-word;
+}
+
+/* ---- 头像上传 ---- */
+.avatar-upload {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.avatar-upload__input {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  min-height: var(--touch-target);
+  padding: var(--space-2) 0;
+}
+
+/* ---- 旧版资料列表（兼容保留） ---- */
 .profile-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
