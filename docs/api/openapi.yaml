@@ -11,7 +11,7 @@ openapi: 3.0.3
 
 info:
   title: 校园二手交易平台 API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     ## 总则
 
@@ -19,7 +19,7 @@ info:
     并构建契约同构的 mock；后端实现与文档化以此为准。基线文档：
 
     - 需求分析 v1.0（已确认）：`docs/需求分析.md`
-    - 项目规范 v0.4：`docs/plan/00-项目规范.md`（契约硬规则、批次与变更流程）
+    - 项目规范 v0.5：`docs/plan/00-项目规范.md`（契约硬规则、批次与变更流程）
 
     ### 统一响应体
 
@@ -37,8 +37,9 @@ info:
 
     ### 业务错误码（分段制）
 
-    `code = 0` 成功；失败按模块分段。**本批次已定义 10xx / 90xx 两段**，
-    20xx–60xx 段已预留，具体码随所属批次契约更新补全：
+    `code = 0` 成功；失败按模块分段。**已定义 10xx / 20xx / 90xx 三段**
+    （20xx 用户域段为批次 1 · v0.2.0 新增），30xx–60xx 段已预留，
+    具体码随所属批次契约更新补全：
 
     | code | HTTP | 含义 | 说明 |
     | --- | --- | --- | --- |
@@ -49,7 +50,12 @@ info:
     | 1004 | 403 | 未通过校园认证 | 商品域等需认证接口的准入失败，平台最硬准入线 |
     | 1005 | 403 | 需要管理员权限 | 管理接口角色校验失败 |
     | 1006 | 429 | 登录失败次数超限 | 连续 5 次失败限流 10 分钟 |
-    | 20xx | — | 用户域 | 批次 1 定义（注册/资料/校园认证/学校校区） |
+    | 2001 | 409 | 用户名已存在 | 注册 |
+    | 2002 | 409 | 学号已被注册 | 注册 |
+    | 2003 | 400 | 原密码错误 | 修改密码 |
+    | 2004 | 422 | 重置凭证不匹配 | 用户名与学号/邮箱对不上；用户名不存在同样返回（防探测） |
+    | 2005 | 401 | 用户名或密码错误 | 登录失败；连续 5 次后转 `429 / 1006` |
+    | 2006 | 403 | 账号已被封禁 | `status = banned` 用户登录 |
     | 30xx | — | 商品域 | 批次 2 定义（商品/图片/收藏/分类/搜索/推荐） |
     | 40xx | — | 交易域 | 批次 3 定义（订单/支付/评价） |
     | 50xx | — | 聊天域 | 批次 4 定义（会话/消息） |
@@ -103,9 +109,11 @@ info:
 
     ### 标签规划（后续批次按此追加，保持稳定）
 
-    `system`(批次0) · `auth`/`users`/`certification`/`schools`(批次1) ·
-    `products`/`categories`/`favorites`/`recommendations`/`images`(批次2) ·
-    `orders`(批次3) · `conversations`(批次4) · `admin`(批次5)
+    `system`(批次0) ·
+    `auth`/`users`/`certification`/`schools`/`images`(批次1 已建立用户域部分) ·
+    `products`/`categories`/`favorites`/`recommendations`(批次2；`images` 的
+    商品图用途批次 2 扩展) · `orders`(批次3) · `conversations`(批次4) ·
+    `admin`(批次5)
 
 # ============================================================
 
@@ -119,6 +127,16 @@ servers:
 tags:
   - name: system
     description: 系统与健康检查（批次 0 建立）
+  - name: auth
+    description: 注册 / 登录 / 登出 / 密码重置（批次 1 建立）
+  - name: users
+    description: 个人资料 / 密码修改 / 头像上传（批次 1 建立）
+  - name: certification
+    description: 校园认证申请提交与历史查询（批次 1 建立）
+  - name: schools
+    description: 学校与校区公开列表（批次 1 建立）
+  - name: images
+    description: 图片实体鉴权访问（批次 1 建立用户域用途；商品图用途批次 2 扩展）
 
 # 全局默认鉴权：标注「公开」的接口在路径内以 security: [] 覆盖
 security:
@@ -216,6 +234,746 @@ paths:
               schema:
                 type: string
 
+  # ============================================================
+  # 用户域（批次 1 · v0.2.0）：auth / users / certification / schools / images
+  # ============================================================
+
+  /auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: 注册
+      description: |
+        **公开**。用户名 + 密码 + 邮箱 + 学号注册；昵称可选，缺省取
+        `username`。注册成功**不签发令牌**，需再调用 `POST /auth/login`；
+        `username` 与 `student_no` 注册后不可修改。
+
+        - 字段校验（双端同源唯一口径，pattern 见 `RegisterInput`）失败
+          统一 `422 / 9001`，`data.fields` 携带字段级错误。
+        - 唯一性冲突：用户名已存在 `409 / 2001`；学号已被注册 `409 / 2002`。
+        - 密码落库为 bcrypt 加盐哈希（NFR-05），任何链路不得明文、不得
+          可逆加密、不得以无盐快速哈希替代。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterInput'
+            example:
+              username: zhangsan01
+              password: Pass1234
+              email: zhangsan01@example.edu.cn
+              student_no: '2024010101'
+              nickname: 小张
+      responses:
+        '200':
+          description: 注册成功，返回新建用户资料（不签发令牌）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 1
+                  username: zhangsan01
+                  student_no: '2024010101'
+                  email: zhangsan01@example.edu.cn
+                  nickname: 小张
+                  display_name: 小张
+                  phone: null
+                  avatar: null
+                  school: null
+                  campus: null
+                  role: student
+                  auth_status: unverified
+                  status: active
+                  credit_score: null
+                  created_at: '2026-10-20T15:04:05+08:00'
+        '409':
+          description: 用户名已存在（code 2001）或学号已被注册（code 2002）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                username_taken:
+                  summary: 用户名已存在
+                  value:
+                    code: 2001
+                    message: 用户名已存在
+                    data: null
+                student_no_taken:
+                  summary: 学号已被注册
+                  value:
+                    code: 2002
+                    message: 学号已被注册
+                    data: null
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: 登录
+      description: |
+        **公开**。用户名或学号 + 密码登录，签发 JWT（flask-jwt-extended，
+        identity = 用户 id）。`account` 先按 `username` 精确匹配，未命中
+        按 `student_no` 匹配。
+
+        - 用户名或密码错误 `401 / 2005`；账号已被封禁 `403 / 2006`——
+          封禁用户即使密码正确也返回 `2006`，且按一次失败计入限流。
+        - 连续失败 5 次后 10 分钟内返回 `429 / 1006`（限流键
+          `rate:login:{ip}`，登录成功清零计数）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+            example:
+              account: zhangsan01
+              password: Pass1234
+      responses:
+        '200':
+          description: 登录成功，返回访问令牌与用户资料。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LoginData'
+              example:
+                code: 0
+                message: ok
+                data:
+                  access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZGVudGl0eSI6IjEiLCJqdGkiOiJiMWFwaS1kZW1vIn0.sig
+                  token_type: Bearer
+                  expires_in: 86400
+                  user:
+                    id: 1
+                    username: zhangsan01
+                    student_no: '2024010101'
+                    email: zhangsan01@example.edu.cn
+                    nickname: 小张
+                    display_name: 小张
+                    phone: null
+                    avatar: null
+                    school: null
+                    campus: null
+                    role: student
+                    auth_status: unverified
+                    status: active
+                    credit_score: null
+                    created_at: '2026-10-20T15:04:05+08:00'
+        '401':
+          description: 用户名或密码错误（code 2005；不区分用户名不存在与密码错误，防探测）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 2005
+                message: 用户名或密码错误
+                data: null
+        '403':
+          description: 账号已被封禁（code 2006；即使密码正确亦拒绝，并按一次失败计入限流）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 2006
+                message: 账号已被封禁
+                data: null
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: 登出
+      description: |
+        需登录（不要求校园认证状态）。无请求体；将当前令牌 `jti` 写入
+        Redis 黑名单 `auth:blacklist:{jti}`，TTL 为令牌剩余有效期。
+
+        - 正常：`data` 为空对象 `{}`。
+        - Redis 故障降级：仍返回 200，`data` 为
+          `{ degraded: true, degraded_reason: <原因摘要> }`——黑名单未落，
+          令牌仍有效至自然过期，服务端日志告警（降级显式可见）。
+      responses:
+        '200':
+          description: |
+            登出成功。正常 `data = {}`；Redis 故障降级时 `data` 为
+            `{ degraded: true, degraded_reason: string }`（令牌有效至自然过期）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        description: 正常为空对象；Redis 故障降级时含 degraded 标记与 degraded_reason。
+              example:
+                code: 0
+                message: ok
+                data: {}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/password/reset:
+    post:
+      tags: [auth]
+      operationId: resetPassword
+      summary: 重置密码
+      description: |
+        **公开**。用户名 + 学号或邮箱 + 新密码重置（不发邮件、不发短信）。
+        成功后不清除已签发令牌（无会话管理需求，YAGNI）。
+
+        - 凭证不匹配（用户名与所选渠道的学号/邮箱对不上）返回
+          `422 / 2004`；**用户名不存在同样返回 `2004`**，不泄露用户名
+          存在性（防探测）。
+        - 字段校验失败 `422 / 9001`（新密码强度等，`data.fields` 字段级）。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetInput'
+            example:
+              username: zhangsan01
+              reset_channel: student_no
+              reset_value: '2024010101'
+              new_password: NewPass1234
+      responses:
+        '200':
+          description: 重置成功（data 为 null；已签发令牌不清除）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        nullable: true
+                        description: 固定为 null。
+              example:
+                code: 0
+                message: ok
+                data: null
+        '422':
+          description: 重置凭证不匹配（code 2004；用户名不存在亦返回该码，防探测）或参数校验失败（code 9001）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                mismatch:
+                  summary: 凭证不匹配 / 用户名不存在
+                  value:
+                    code: 2004
+                    message: 重置凭证不匹配
+                    data: null
+                invalid_fields:
+                  summary: 字段校验失败
+                  value:
+                    code: 9001
+                    message: 参数校验失败
+                    data:
+                      fields:
+                        new_password: 密码长度须为 8–64 位且同时包含字母与数字
+
+  /users/me:
+    get:
+      tags: [users]
+      operationId: getMyProfile
+      summary: 获取个人资料
+      description: |
+        需登录。当前登录用户的完整资料（个人中心首屏）；`UserProfile`
+        为完整形态，与 `UserSummary` 概要形态并存。未认证或未设置的
+        字段（`phone` / `avatar` / `school` / `campus` / `credit_score`）
+        为 null。
+      responses:
+        '200':
+          description: 当前用户资料。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 1
+                  username: zhangsan01
+                  student_no: '2024010101'
+                  email: zhangsan01@example.edu.cn
+                  nickname: 小张
+                  display_name: 小张-示例大学(东校区)
+                  phone: '13800138000'
+                  avatar:
+                    id: 42
+                    url: /api/images/42
+                  school:
+                    id: 1
+                    name: 示例大学
+                    multi_campus: true
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  role: student
+                  auth_status: approved
+                  status: active
+                  credit_score: null
+                  created_at: '2026-10-20T15:04:05+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [users]
+      operationId: updateMyProfile
+      summary: 更新个人资料
+      description: |
+        需登录。`nickname` / `email` / `phone` 三字段均可选，仅更新请求体
+        中出现的字段；`username` / `student_no` 不在请求体中（注册后
+        不可改）。`phone` 填写时须为 1 开头的 11 位纯数字，**传空串表示
+        清除**；更新后展示名按认证状态联动重算（AC-04）。
+
+        - 字段校验失败 `422 / 9001`（`data.fields` 字段级错误）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdateInput'
+            example:
+              nickname: 小明明
+              phone: '13800138000'
+      responses:
+        '200':
+          description: 更新成功，返回最新资料。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 1
+                  username: zhangsan01
+                  student_no: '2024010101'
+                  email: zhangsan01@example.edu.cn
+                  nickname: 小明明
+                  display_name: 小明明-示例大学(东校区)
+                  phone: '13800138000'
+                  avatar:
+                    id: 42
+                    url: /api/images/42
+                  school:
+                    id: 1
+                    name: 示例大学
+                    multi_campus: true
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  role: student
+                  auth_status: approved
+                  status: active
+                  credit_score: null
+                  created_at: '2026-10-20T15:04:05+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /users/me/password:
+    put:
+      tags: [users]
+      operationId: updateMyPassword
+      summary: 修改密码
+      description: |
+        需登录。校验原密码后设置新密码（强度同注册规则）。成功后已签发
+        令牌不强制失效（无会话管理需求）。
+
+        - 原密码错误 `400 / 2003`；新密码强度不符 `422 / 9001`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeInput'
+            example:
+              old_password: Pass1234
+              new_password: NewPass1234
+      responses:
+        '200':
+          description: 修改成功（data 为 null）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        nullable: true
+                        description: 固定为 null。
+              example:
+                code: 0
+                message: ok
+                data: null
+        '400':
+          description: 原密码错误（code 2003）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 2003
+                message: 原密码错误
+                data: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /users/me/avatar:
+    post:
+      tags: [users]
+      operationId: uploadMyAvatar
+      summary: 上传头像
+      description: |
+        需登录。`multipart/form-data` 上传头像，form 字段 `file`：单文件
+        jpg/png/webp，≤ 5 MB。服务端四件套校验（扩展名 + MIME + 大小 +
+        内容哈希改名），落 `uploads/avatar/<年月>/`；旧头像文件保留不删
+        （images 表仅增不改，YAGNI）。
+
+        - 类型或大小不符 `422 / 9001`，`data.fields.file` 携带原因。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 头像图片文件（jpg/png/webp，≤ 5 MB）。
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 上传成功，返回最新资料（avatar 字段已更新）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 1
+                  username: zhangsan01
+                  student_no: '2024010101'
+                  email: zhangsan01@example.edu.cn
+                  nickname: 小张
+                  display_name: 小张
+                  phone: null
+                  avatar:
+                    id: 42
+                    url: /api/images/42
+                  school: null
+                  campus: null
+                  role: student
+                  auth_status: unverified
+                  status: active
+                  credit_score: null
+                  created_at: '2026-10-20T15:04:05+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /certification/applications:
+    post:
+      tags: [certification]
+      operationId: submitAuthApplication
+      summary: 提交校园认证申请
+      description: |
+        需登录且 `role = student` 且 `auth_status ∈ {unverified, rejected}`。
+        `multipart/form-data` 提交：选校（多校区学校必选校区，单校区须
+        省略）、真实姓名、学生证照片；`student_no` 须与注册学号**完全
+        一致**（防代认证）。提交后用户 `auth_status` 置为 pending，申请
+        进入审核队列（审核动作属批次 5 管理域）。历史申请保留，驳回后
+        可重提。
+
+        - 表单校验（缺校区 / 学号与注册不一致 / 学校停用或不存在 / 文件
+          类型或大小不符）`422 / 9001`，`data.fields` 字段级错误。
+        - 当前状态不允许提交（pending / approved）`409 / 9003`；管理员
+          提交亦返回 `9003` 并在 message 说明管理员无需认证
+          （`403 / 1005` 语义不适用）。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [school_id, real_name, student_no, file]
+              properties:
+                school_id:
+                  type: integer
+                  format: int64
+                  description: 学校 id（经 `GET /schools` 获取）。
+                campus_id:
+                  type: integer
+                  format: int64
+                  description: 校区 id；多校区学校必填，单校区学校必须省略。
+                real_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 32
+                  description: 真实姓名（1–32 字符）。
+                student_no:
+                  type: string
+                  description: 学号；须与注册学号完全一致。
+                file:
+                  type: string
+                  format: binary
+                  description: 学生证照片文件（jpg/png/webp，≤ 5 MB）。
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 提交成功，返回新建申请（status = pending），用户 auth_status 同步置为 pending。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuthApplication'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 7
+                  school:
+                    id: 1
+                    name: 示例大学
+                    multi_campus: true
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  student_no: '2024010101'
+                  real_name: 张三
+                  student_card:
+                    id: 43
+                    url: /api/images/43
+                  status: pending
+                  reject_reason: null
+                  reviewed_at: null
+                  created_at: '2026-10-20T15:10:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /certification/applications/mine:
+    get:
+      tags: [certification]
+      operationId: listMyAuthApplications
+      summary: 我的认证申请历史
+      description: |
+        需登录。当前用户全部认证申请，按 `created_at` 倒序；**不分页**——
+        个人历史申请量小，一次取全的收益大于分页复杂度（含 pending /
+        approved / rejected 及驳回原因，供前端展示历史与重提入口）。
+      responses:
+        '200':
+          description: 认证申请列表（created_at 倒序，不分页）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AuthApplication'
+              example:
+                code: 0
+                message: ok
+                data:
+                  - id: 7
+                    school:
+                      id: 1
+                      name: 示例大学
+                      multi_campus: true
+                    campus:
+                      id: 1
+                      school_id: 1
+                      name: 东校区
+                    student_no: '2024010101'
+                    real_name: 张三
+                    student_card:
+                      id: 43
+                      url: /api/images/43
+                    status: pending
+                    reject_reason: null
+                    reviewed_at: null
+                    created_at: '2026-10-20T15:10:00+08:00'
+                  - id: 5
+                    school:
+                      id: 1
+                      name: 示例大学
+                      multi_campus: true
+                    campus: null
+                    student_no: '2024010101'
+                    real_name: 张三
+                    student_card:
+                      id: 31
+                      url: /api/images/31
+                    status: rejected
+                    reject_reason: 学生证照片模糊，无法核对学号
+                    reviewed_at: '2026-10-19T10:00:00+08:00'
+                    created_at: '2026-10-19T09:30:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /schools:
+    get:
+      tags: [schools]
+      operationId: listSchools
+      summary: 学校与校区公开列表
+      description: |
+        **公开**（游客即可查）。全部**启用**状态的学校与校区，按名称
+        排序；**不分页**——数据量小，注册 / 认证页选择器需一次取全。
+        无业务错误。
+      security: []
+      responses:
+        '200':
+          description: 学校列表（含校区数组，仅启用，按名称排序，不分页）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SchoolWithCampuses'
+              example:
+                code: 0
+                message: ok
+                data:
+                  - id: 1
+                    name: 示例大学
+                    multi_campus: true
+                    campuses:
+                      - id: 1
+                        school_id: 1
+                        name: 东校区
+                      - id: 2
+                        school_id: 1
+                        name: 西校区
+                  - id: 2
+                    name: 示例学院
+                    multi_campus: false
+                    campuses:
+                      - id: 3
+                        school_id: 2
+                        name: 主校区
+
+  /images/{id}:
+    get:
+      tags: [images]
+      operationId: getImage
+      summary: 图片实体鉴权访问
+      description: |
+        需登录。返回图片实体二进制（`image/jpeg|png|webp`）。**本接口不走
+        统一响应体 envelope**，直接输出文件流；出错时仍按 `ErrorEnvelope`
+        的 JSON 结构返回错误体。
+
+        - 访问控制（NFR-08）：`purpose = student_card` 的图片**仅上传者
+          本人与管理员**可读；其余（本批次仅 `avatar`）登录即可读。
+        - 越权与不存在一律 `404 / 9002`，不区分两种情况（防探测）。
+        - 批次 2 起商品图、批次 4 聊天图复用本接口，`purpose` 值域随
+          批次扩展。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 图片 id。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 图片实体二进制（不走统一响应体 envelope）。
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 # ============================================================
 
 components:
@@ -224,7 +982,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: '`Authorization: Bearer <token>`，登录接口签发（批次 1 落地）。'
+      description: '`Authorization: Bearer <token>`，由 `POST /api/auth/login` 签发。'
 
   # ---------- 可复用请求参数 ----------
   parameters:
@@ -451,8 +1209,8 @@ components:
     ImageRef:
       type: object
       description: |
-        图片引用。实体文件经后端鉴权路由 `/api/images/{id}` 访问
-        （该接口随批次 1 落地），不暴露可枚举静态目录。
+        图片引用。实体文件经后端鉴权路由 `GET /api/images/{id}` 访问，
+        不暴露可枚举静态目录。
       required: [id, url]
       properties:
         id:
@@ -532,7 +1290,8 @@ components:
           nullable: true
           description: |
             信誉分：该用户收到的全部评价评分的算术平均，两位小数；
-            无评价为 null，前端展示「暂无」（FR-ORD-09）。
+            无评价为 null（批次 3 起有评价后非空），前端展示「暂无」
+            （FR-ORD-09）。
           example: 4.67
         auth_status:
           $ref: '#/components/schemas/AuthStatus'
@@ -591,6 +1350,231 @@ components:
           type: string
           format: date-time
           description: 发布时间（ISO 8601，+08:00）。
+
+    # -- 用户域数据（批次 1） --
+    UserProfile:
+      type: object
+      description: 个人资料完整形态（与 UserSummary 概要形态并存）。
+      required: [id, username, student_no, email, nickname, display_name, role, auth_status, status, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+          description: 用户名（注册后不可修改）。
+        student_no:
+          type: string
+          description: 学号（注册后不可修改）。
+        email:
+          type: string
+          format: email
+        nickname:
+          type: string
+        display_name:
+          type: string
+          description: 展示名，规则同 UserSummary（FR-USR-10）。
+          example: 小张-示例大学(东校区)
+        phone:
+          type: string
+          nullable: true
+          pattern: '^1\d{10}$'
+          description: 手机号：1 开头的 11 位纯数字；未设置为 null。
+        avatar:
+          allOf:
+            - $ref: '#/components/schemas/ImageRef'
+          nullable: true
+        school:
+          allOf:
+            - $ref: '#/components/schemas/SchoolRef'
+          nullable: true
+          description: 认证通过后展示；未认证为 null。
+        campus:
+          allOf:
+            - $ref: '#/components/schemas/CampusRef'
+          nullable: true
+          description: 多校区学校认证通过后展示；未认证 / 单校区为 null。
+        role:
+          $ref: '#/components/schemas/Role'
+        auth_status:
+          $ref: '#/components/schemas/AuthStatus'
+        status:
+          $ref: '#/components/schemas/UserAccountStatus'
+        credit_score:
+          type: number
+          nullable: true
+          description: 信誉分；批次 3 起有评价后非空。
+        created_at:
+          type: string
+          format: date-time
+          description: 注册时间（ISO 8601，+08:00）。
+
+    LoginData:
+      type: object
+      description: 登录成功数据体。
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token:
+          type: string
+          description: JWT（flask-jwt-extended 签发，identity = 用户 id）。
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          description: 令牌有效期（秒，JWT_EXPIRE_MINUTES × 60）。
+        user:
+          $ref: '#/components/schemas/UserProfile'
+
+    AuthApplication:
+      type: object
+      description: 校园认证申请（新提交只会出现 pending；历史含 rejected）。
+      required: [id, school, student_no, real_name, student_card, status, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        school:
+          $ref: '#/components/schemas/SchoolRef'
+        campus:
+          allOf:
+            - $ref: '#/components/schemas/CampusRef'
+          nullable: true
+        student_no:
+          type: string
+        real_name:
+          type: string
+        student_card:
+          $ref: '#/components/schemas/ImageRef'
+        status:
+          $ref: '#/components/schemas/AuthStatus'
+        reject_reason:
+          type: string
+          nullable: true
+          description: 驳回原因（管理员填写）；非 rejected 为 null。
+        reviewed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 审核时间；未审核为 null。
+        created_at:
+          type: string
+          format: date-time
+          description: 提交时间（ISO 8601，+08:00）。
+
+    SchoolWithCampuses:
+      type: object
+      description: 学校概要 + 校区列表（公开列表元素）。
+      allOf:
+        - $ref: '#/components/schemas/SchoolRef'
+        - type: object
+          required: [campuses]
+          properties:
+            campuses:
+              type: array
+              items:
+                $ref: '#/components/schemas/CampusRef'
+
+    # -- 用户域请求体（批次 1 · 字段校验双端同源：后端独立复验，前端表单预检；失败统一 422 / 9001） --
+    RegisterInput:
+      type: object
+      description: 注册请求体（注册成功不签发令牌）。
+      required: [username, password, email, student_no]
+      properties:
+        username:
+          type: string
+          pattern: '^[A-Za-z][A-Za-z0-9_]{0,31}$'
+          minLength: 1
+          maxLength: 32
+          description: 用户名（1–32 位，字母开头，仅字母/数字/下划线），注册后不可修改。
+        password:
+          type: string
+          pattern: '^(?=.*[A-Za-z])(?=.*\d).{8,64}$'
+          description: 密码（8–64 位，须同时包含字母与数字）；落库为 bcrypt 加盐哈希（NFR-05）。
+        email:
+          type: string
+          format: email
+          description: 邮箱。
+        student_no:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: 学号（1–32 字符，不限定纯数字），注册后不可修改。
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: 昵称（1–32 字符），可选，缺省取 username。
+
+    LoginInput:
+      type: object
+      description: 登录请求体（account 先按用户名精确匹配，未命中按学号匹配）。
+      required: [account, password]
+      properties:
+        account:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: 用户名或学号（1–32 字符）。
+        password:
+          type: string
+          description: 密码明文（仅与 bcrypt 哈希比对，登录时不校验强度）。
+
+    PasswordResetInput:
+      type: object
+      description: 密码重置请求体（不发邮件短信；凭证不匹配与用户名不存在一律 2004，防探测）。
+      required: [username, reset_channel, reset_value, new_password]
+      properties:
+        username:
+          type: string
+          description: 用户名。
+        reset_channel:
+          type: string
+          enum: [student_no, email]
+          description: 重置凭证渠道：student_no 学号 / email 邮箱。
+        reset_value:
+          type: string
+          description: 凭证值；渠道为 student_no 时须与注册学号一致，为 email 时须与注册邮箱一致。
+        new_password:
+          type: string
+          pattern: '^(?=.*[A-Za-z])(?=.*\d).{8,64}$'
+          description: 新密码（8–64 位，须同时包含字母与数字）。
+
+    ProfileUpdateInput:
+      type: object
+      description: |
+        个人资料更新请求体：三字段均可选，仅更新请求体中出现的字段；
+        username / student_no 不可改，不在请求体中。
+      properties:
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: 昵称（1–32 字符）。
+        email:
+          type: string
+          format: email
+          description: 邮箱。
+        phone:
+          type: string
+          nullable: true
+          pattern: '^1\d{10}$'
+          description: |
+            手机号：填写时为 1 开头的 11 位纯数字；**传空串表示清除**
+            （服务端对空串放行），未设置为 null。
+
+    PasswordChangeInput:
+      type: object
+      description: 修改密码请求体（须校验原密码，原密码错误返回 400 / 2003）。
+      required: [old_password, new_password]
+      properties:
+        old_password:
+          type: string
+          description: 原密码。
+        new_password:
+          type: string
+          pattern: '^(?=.*[A-Za-z])(?=.*\d).{8,64}$'
+          description: 新密码（8–64 位，须同时包含字母与数字）。
 
     # -- 业务枚举（值域由需求分析状态机定死，双端不得私改） --
     Role:
