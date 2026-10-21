@@ -5,16 +5,6 @@
   gap: var(--space-4);
 }
 
-.auth-form__notice {
-  margin: var(--space-4) 0 0;
-  padding: var(--space-3) var(--space-4);
-  max-width: 26rem;
-  color: var(--color-info);
-  background-color: var(--color-info-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-
 .auth-form__links {
   margin-top: var(--space-4);
   color: var(--color-text-secondary);
