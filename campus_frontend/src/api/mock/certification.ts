@@ -50,7 +50,19 @@ function seedApplications(): void {
   }
 }
 
-seedApplications()
+/**
+ * 惰性种子：种子依赖 MOCK_ACCOUNTS（由懒加载的 mock/auth 在模块顶层填充）。
+ * 若在模块加载时立即执行，深链/刷新直进 /certification 时 certification chunk
+ * 先于 auth chunk 求值，会拿到空账号表，student02/03 预置历史静默丢失。
+ * 改为首次 mock 调用时执行 ensureSeed()，此时依赖模块必然已初始化。
+ */
+let applicationSeeded = false
+
+function ensureSeed(): void {
+  if (applicationSeeded) return
+  applicationSeeded = true
+  seedApplications()
+}
 
 let nextApplicationIdSeed = 20
 
@@ -66,6 +78,7 @@ function nextApplicationId(): number {
  */
 export function mockSubmitApplication(form: CertificationSubmitForm): Promise<AuthApplication> {
   return delay(600).then(() => {
+    ensureSeed()
     const user = requireMockCurrentUser()
     if (user.role === 'admin') {
       throw new ApiError(9003, '管理员账号无需校园认证', null)
@@ -131,6 +144,7 @@ export function mockSubmitApplication(form: CertificationSubmitForm): Promise<Au
 /** GET /api/certification/applications/mine：当前用户全部申请，created_at 倒序，不分页 */
 export function mockGetMyApplications(): Promise<AuthApplication[]> {
   return delay(350).then(() => {
+    ensureSeed()
     const user = requireMockCurrentUser()
     const history = APPLICATIONS_BY_USER.get(user.id) ?? []
     return structuredClone(history)

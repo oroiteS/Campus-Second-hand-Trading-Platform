@@ -128,13 +128,32 @@ function nextUserId(): number {
 /** 连续登录失败计数（对应契约 rate:login:{ip}；登录成功清零） */
 let loginFailCount = 0
 
+/** 锁定截止时间戳（毫秒）：达到失败上限时记录，600 秒后自动解锁（对齐真实 Redis TTL） */
+let loginLockedUntil: number | null = null
+
 const LOGIN_FAIL_LIMIT = 5
 
-/** POST /api/auth/login：三种账号登录、2005、2006、1006（连续 5 次失败后限流） */
+const LOGIN_LOCK_MS = 600_000
+
+/** 记一次登录失败；达到上限即锁定 600 秒 */
+function registerLoginFail(): void {
+  loginFailCount += 1
+  if (loginFailCount >= LOGIN_FAIL_LIMIT) {
+    loginLockedUntil = Date.now() + LOGIN_LOCK_MS
+  }
+}
+
+/** POST /api/auth/login：三种账号登录、2005、2006、1006（连续 5 次失败后限流，600 秒自动解锁） */
 export function mockLogin(body: LoginInput): Promise<LoginData> {
   return delay(400).then(() => {
     if (loginFailCount >= LOGIN_FAIL_LIMIT) {
-      throw new ApiError(1006, '登录失败次数过多，请 10 分钟后重试', null)
+      if (loginLockedUntil != null && Date.now() >= loginLockedUntil) {
+        // 锁定期已过：自动解锁并重新计数（对齐 Redis TTL 过期语义）
+        loginFailCount = 0
+        loginLockedUntil = null
+      } else {
+        throw new ApiError(1006, '登录失败次数过多，请 10 分钟后重试', null)
+      }
     }
     const found = MOCK_ACCOUNTS.find(
       (account) =>
@@ -142,11 +161,11 @@ export function mockLogin(body: LoginInput): Promise<LoginData> {
         account.profile.student_no === body.account,
     )
     if (!found || found.password !== body.password) {
-      loginFailCount += 1
+      registerLoginFail()
       throw new ApiError(2005, '用户名或密码错误', null)
     }
     if (found.profile.status === 'banned') {
-      loginFailCount += 1
+      registerLoginFail()
       throw new ApiError(2006, '账号已被封禁', null)
     }
     loginFailCount = 0
