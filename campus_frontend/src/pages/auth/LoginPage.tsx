@@ -1,9 +1,8 @@
 import { Button, Input } from 'antd'
 import { useId, useState, type FormEvent } from 'react'
-import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 import { PageHeader } from '../../components/PageHeader'
-import { DEMO_USERS } from '../../api/mock/system'
-import { useAuthPhase, useAuthStore } from '../../stores/authStore'
+import { useAuthPhase } from '../../stores/authStore'
 import './auth.css'
 
 interface LoginErrors {
@@ -11,29 +10,15 @@ interface LoginErrors {
   password?: string
 }
 
-/** 从路由 state 安全读取来源路径（登录后回跳） */
-function readFromPath(state: unknown): string | undefined {
-  if (typeof state === 'object' && state !== null && 'from' in state) {
-    const from = state.from
-    if (typeof from === 'string' && from.startsWith('/')) {
-      return from
-    }
-  }
-  return undefined
-}
-
 /**
  * 登录页（批次 0 占位）：完整表单无障碍示范——
  * label 关联、aria-required / aria-invalid / aria-describedby、错误 role="alert"。
- * 批次 0 无登录接口：校验通过后以演示身份登录（未认证学生态），批次 1 接入真实接口。
+ * 批次 1 已接入 authStore 真实流程；本页完整登录逻辑随下一提交（feat(auth)）交付。
  */
 export function LoginPage() {
   const accountId = useId()
   const passwordId = useId()
   const phase = useAuthPhase()
-  const navigate = useNavigate()
-  const location = useLocation()
-  const setAuth = useAuthStore((s) => s.setAuth)
 
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
@@ -61,8 +46,8 @@ export function LoginPage() {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!validate()) return
-    setAuth('demo-token-unverified', DEMO_USERS.unverified)
-    navigate(readFromPath(location.state) ?? '/', { replace: true })
+    // 真实登录接入前的过渡提示（下一提交交付完整登录页）
+    setErrors({ password: '登录通道正在接入真实接口，请稍候' })
   }
 
   return (
