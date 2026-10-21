@@ -3,7 +3,7 @@ import { delay } from '../../utils/delay'
 import { validateRealName, validateUploadFile } from '../../utils/validators'
 import { ApiError } from '../http'
 import type { CertificationSubmitForm } from '../certification'
-import { getMockCurrentUser, MOCK_ACCOUNTS, nextImageId, nowIso } from './users'
+import { MOCK_ACCOUNTS, nextImageId, nowIso, requireMockCurrentUser } from './users'
 import { MOCK_SCHOOLS } from './schools'
 
 /**
@@ -66,10 +66,7 @@ function nextApplicationId(): number {
  */
 export function mockSubmitApplication(form: CertificationSubmitForm): Promise<AuthApplication> {
   return delay(600).then(() => {
-    const user = getMockCurrentUser()
-    if (!user) {
-      throw new ApiError(1001, '令牌缺失或无效', null)
-    }
+    const user = requireMockCurrentUser()
     if (user.role === 'admin') {
       throw new ApiError(9003, '管理员账号无需校园认证', null)
     }
@@ -134,10 +131,7 @@ export function mockSubmitApplication(form: CertificationSubmitForm): Promise<Au
 /** GET /api/certification/applications/mine：当前用户全部申请，created_at 倒序，不分页 */
 export function mockGetMyApplications(): Promise<AuthApplication[]> {
   return delay(350).then(() => {
-    const user = getMockCurrentUser()
-    if (!user) {
-      throw new ApiError(1001, '令牌缺失或无效', null)
-    }
+    const user = requireMockCurrentUser()
     const history = APPLICATIONS_BY_USER.get(user.id) ?? []
     return structuredClone(history)
   })

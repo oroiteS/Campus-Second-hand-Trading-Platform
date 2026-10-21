@@ -1,6 +1,6 @@
 import { ApiError } from '../api/http'
 
-/** 是否为令牌类错误（1001 缺失/无效、1002 过期、1003 注销）：页面据此避免重复引导（http 层已统一跳登录） */
+/** 是否为令牌类错误（1001 缺失/无效、1002 过期、1003 注销）：页面据此避免重复引导（http 层与 mock 会话层已统一清令牌并引导登录） */
 export function isTokenInvalidError(error: unknown): boolean {
   return (
     error instanceof ApiError &&

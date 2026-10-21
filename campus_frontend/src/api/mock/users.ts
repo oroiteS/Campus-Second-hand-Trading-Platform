@@ -1,5 +1,6 @@
 import dayjs from 'dayjs'
 import type { ProfileUpdateInput, UserProfile } from '../../types'
+import { useAuthStore } from '../../stores/authStore'
 import { delay } from '../../utils/delay'
 import {
   validateEmail,
@@ -8,11 +9,12 @@ import {
   validatePhoneOptional,
   validateUploadFile,
 } from '../../utils/validators'
-import { ApiError } from '../http'
+import { ApiError, handleTokenInvalid } from '../http'
 
 /**
  * mock 会话：内存态的「当前登录用户」。
- * mock 登录成功时由 mock/auth 写入；刷新页面后丢失，重新登录即可（mock 开发态预期）。
+ * mock 登录成功时由 mock/auth 写入；页面刷新后内存丢失，由 getMockCurrentUser
+ * 从 authStore 持久化登录态惰性恢复（对齐真实后端「凭持久化令牌重建会话」的刷新体验）。
  */
 let currentUser: UserProfile | null = null
 
@@ -20,8 +22,30 @@ export function mockSetSession(profile: UserProfile): void {
   currentUser = profile
 }
 
+/** 登出时清除内存会话，与 authStore 清令牌保持一致 */
+export function mockClearSession(): void {
+  currentUser = null
+}
+
 export function getMockCurrentUser(): UserProfile | null {
+  if (!currentUser) {
+    // persist 恢复的登录态（token+user 齐备）才等价重建会话
+    const { token, user } = useAuthStore.getState()
+    if (token && user) {
+      currentUser = cloneProfile(user)
+    }
+  }
   return currentUser
+}
+
+/**
+ * 会话缺失统一兜底：与 http 层令牌失效引导同源——清令牌并引导重新登录（非游客页整页跳转），
+ * 再抛 1001 供调用链感知。避免 mock 直接 throw ApiError 绕过拦截器导致错误墙死局
+ * （GuestOnly 因持久化令牌仍在而放行 /login 之外的路径，用户无法自行恢复）。
+ */
+function sessionMissing(): never {
+  handleTokenInvalid()
+  throw new ApiError(1001, '令牌缺失或无效', null)
 }
 
 /** 深拷贝用户资料（含嵌套可空对象），避免 mock 内部状态被外部改动 */
@@ -50,10 +74,12 @@ export function nowIso(): string {
 }
 
 function requireSession(): UserProfile {
-  if (!currentUser) {
-    throw new ApiError(1001, '令牌缺失或无效', null)
-  }
-  return currentUser
+  return getMockCurrentUser() ?? sessionMissing()
+}
+
+/** 供其他 mock 模块获取当前会话；缺失时同样走「清令牌 + 引导登录」兜底，不静默 */
+export function requireMockCurrentUser(): UserProfile {
+  return requireSession()
 }
 
 /** GET /api/users/me：当前登录用户完整资料 */
@@ -150,7 +176,8 @@ export const MOCK_ACCOUNTS: MockAccount[] = []
 export function requireMockAccount(userId: number): MockAccount {
   const account = MOCK_ACCOUNTS.find((item) => item.profile.id === userId)
   if (!account) {
-    throw new ApiError(1001, '令牌缺失或无效', null)
+    // 令牌指向的账号不存在（如刷新后注册账号丢失）→ 与契约一致按令牌失效引导重登
+    sessionMissing()
   }
   return account
 }

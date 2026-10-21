@@ -39,8 +39,12 @@ function isGuestPath(pathname: string): boolean {
   return GUEST_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
 }
 
-/** 401 统一引导：清令牌；当前路由非游客页时整页跳转登录（数据全部失效，不用路由内导航） */
-function handleTokenInvalid(): void {
+/**
+ * 令牌失效统一引导：清令牌；当前路由非游客页时整页跳转登录（数据全部失效，不用路由内导航）。
+ * http 响应拦截器与 mock 会话缺失路径共用，保证契约「令牌失效 → 清令牌并引导重新登录」
+ * 在真实请求与 mock 两条链路上一致成立。
+ */
+export function handleTokenInvalid(): void {
   useAuthStore.getState().clearAuth()
   if (!isGuestPath(window.location.pathname)) {
     window.location.assign('/login')

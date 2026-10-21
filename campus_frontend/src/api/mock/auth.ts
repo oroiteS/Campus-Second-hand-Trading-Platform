@@ -17,6 +17,7 @@ import { ApiError } from '../http'
 import {
   MOCK_ACCOUNTS,
   cloneProfile,
+  mockClearSession,
   mockSetSession,
   nowIso,
   type MockAccount,
@@ -206,9 +207,11 @@ export function mockRegister(body: RegisterInput): Promise<UserProfile> {
   })
 }
 
-/** POST /api/auth/logout：mock 直接成功（登出动作由 store 与页面完成） */
+/** POST /api/auth/logout：登出同时清除 mock 内存会话（与 authStore 清令牌一致） */
 export function mockLogout(): Promise<void> {
-  return delay(200).then(() => undefined)
+  return delay(200).then(() => {
+    mockClearSession()
+  })
 }
 
 /**
