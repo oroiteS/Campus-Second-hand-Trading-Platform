@@ -1,3 +1,15 @@
+.account-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+@media (min-width: 768px) {
+  .account-grid {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    align-items: start;
+  }
+}
+
 .account-panel {
   padding: var(--space-4);
   background-color: var(--color-surface);
@@ -5,27 +17,9 @@
   border-radius: var(--radius-md);
 }
 
-.account-panel__intro {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-3);
-  max-width: 30rem;
-  margin: 0 auto;
-}
-
-.account-panel__intro p {
-  margin: 0;
-  color: var(--color-text-secondary);
-}
-
-.account-notice {
-  margin: 0 0 var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  color: var(--color-info);
-  background-color: var(--color-info-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+.account-panel__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
 }
 
 .account-meta {
@@ -36,28 +30,172 @@
   color: var(--color-text-secondary);
 }
 
-.profile-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: var(--space-4);
-  margin: 0 0 var(--space-6);
-}
-
-.profile-list__item {
+.account-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-4);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  gap: var(--space-4);
 }
 
-.profile-list__item dt {
+.account-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.account-mock-hint {
+  margin: 0;
+  grid-column: 1 / -1;
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
 }
 
-.profile-list__item dd {
+/* ---- 资料卡 ---- */
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.profile-avatar {
+  flex-shrink: 0;
+  width: 4rem;
+  height: 4rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  object-fit: cover;
+}
+
+.profile-avatar--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-surface-variant);
+  color: var(--color-text-secondary);
+  font-size: var(--text-2xl);
+}
+
+.profile-card__main {
+  min-width: 0;
+}
+
+.profile-card__display-name {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+  font-size: var(--text-lg);
+  overflow-wrap: break-word;
+}
+
+.profile-card__sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
   margin: 0;
+}
+
+.profile-fields {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+}
+
+.profile-fields__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block: var(--space-1);
+  border-bottom: 1px dashed var(--color-border);
+}
+
+.profile-fields__row dt {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.profile-fields__row dd {
+  margin: 0;
+  text-align: end;
+  overflow-wrap: break-word;
+}
+
+/* ---- 头像上传 ---- */
+.avatar-upload {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.avatar-upload__input {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  min-height: var(--touch-target);
+  padding: var(--space-2) 0;
+}
+
+/* ---- 认证申请历史 ---- */
+.cert-history {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.cert-history__item {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-variant);
+}
+
+.cert-history__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cert-history__school {
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.cert-history__time {
+  margin-inline-start: auto;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.cert-history__detail {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+}
+
+@media (min-width: 768px) {
+  .cert-history__detail {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+}
+
+.cert-history__detail div {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.cert-history__detail dt {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.cert-history__detail dd {
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+/* ---- 学生证照片预览 ---- */
+.cert-preview {
+  max-width: 100%;
+  max-height: 16rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  object-fit: contain;
 }

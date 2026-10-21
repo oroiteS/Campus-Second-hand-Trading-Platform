@@ -27,9 +27,28 @@ function isEnvelope(value: unknown): value is Envelope {
   return typeof value.code === 'number' && typeof value.message === 'string'
 }
 
-/** 令牌类错误码（1001 缺失/无效、1002 过期、1003 注销）→ 清除本地令牌 */
+/** 令牌类错误码（1001 缺失/无效、1002 过期、1003 注销）→ 清除本地令牌并引导登录 */
 function isTokenInvalidCode(code: number): boolean {
   return code === 1001 || code === 1002 || code === 1003
+}
+
+/** 游客页路径：令牌失效引导时避免登录/注册/找回密码页循环跳转 */
+const GUEST_PATHS = ['/login', '/register', '/forgot-password']
+
+function isGuestPath(pathname: string): boolean {
+  return GUEST_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))
+}
+
+/**
+ * 令牌失效统一引导：清令牌；当前路由非游客页时整页跳转登录（数据全部失效，不用路由内导航）。
+ * http 响应拦截器与 mock 会话缺失路径共用，保证契约「令牌失效 → 清令牌并引导重新登录」
+ * 在真实请求与 mock 两条链路上一致成立。
+ */
+export function handleTokenInvalid(): void {
+  useAuthStore.getState().clearAuth()
+  if (!isGuestPath(window.location.pathname)) {
+    window.location.assign('/login')
+  }
 }
 
 export const http = axios.create({
@@ -67,8 +86,10 @@ http.interceptors.response.use(
         const body: unknown = error.response.data
         if (isEnvelope(body)) {
           if (isTokenInvalidCode(body.code)) {
-            useAuthStore.getState().clearAuth()
+            handleTokenInvalid()
           }
+          // 1004（未通过校园认证）保留语义位：商品域（b2）启用，
+          // 本批次用户域接口不出现该码，此处不做引导
           return Promise.reject(new ApiError(body.code, body.message, body.data ?? null))
         }
         return Promise.reject(

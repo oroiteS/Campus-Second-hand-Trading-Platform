@@ -27,8 +27,16 @@ class ErrorCode(Enum):
     INTERNAL_ERROR = (9005, 500, "服务开小差了，请稍后重试")
     RATE_LIMITED = (9006, 429, "请求过于频繁，请稍后重试")
 
-    # ---- 20xx 用户域 / 30xx 商品域 / 40xx 交易域 / 50xx 聊天域 / 60xx 管理域 ----
-    # 段位已预留，具体错误码随批次 1–5 契约更新在此追加。
+    # ---- 20xx 用户域（契约 0.2.0 批次 1 定义）----
+    USERNAME_TAKEN = (2001, 409, "用户名已存在")
+    STUDENT_NO_TAKEN = (2002, 409, "学号已被注册")
+    OLD_PASSWORD_MISMATCH = (2003, 400, "原密码错误")
+    RESET_CREDENTIAL_MISMATCH = (2004, 422, "重置凭证不匹配")
+    LOGIN_FAILED = (2005, 401, "用户名或密码错误")
+    ACCOUNT_BANNED = (2006, 403, "账号已被封禁")
+
+    # ---- 30xx 商品域 / 40xx 交易域 / 50xx 聊天域 / 60xx 管理域 ----
+    # 段位已预留，具体错误码随批次 2–5 契约更新在此追加。
 
     @property
     def code(self) -> int:

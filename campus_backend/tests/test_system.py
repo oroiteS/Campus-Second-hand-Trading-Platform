@@ -106,8 +106,24 @@ class TestOpenApiEndpoints:
         assert res.status_code == 200
         doc = res.get_json()
         assert doc["openapi"] == "3.0.3"
-        assert doc["info"]["version"] == "0.1.0"
-        assert set(doc["paths"]) == {"/health", "/openapi.json", "/docs"}
+        # 契约已冻结为 0.2.0（b1 用户域 12 接口并入）
+        assert doc["info"]["version"] == "0.2.0"
+        assert set(doc["paths"]) == {
+            "/health",
+            "/openapi.json",
+            "/docs",
+            "/auth/register",
+            "/auth/login",
+            "/auth/logout",
+            "/auth/password/reset",
+            "/users/me",
+            "/users/me/password",
+            "/users/me/avatar",
+            "/certification/applications",
+            "/certification/applications/mine",
+            "/schools",
+            "/images/{id}",
+        }
         assert res.content_type.startswith("application/json")
 
     def test_docs_page_serves_html(self, client):

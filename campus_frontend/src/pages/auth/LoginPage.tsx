@@ -1,9 +1,13 @@
-import { Button, Input } from 'antd'
+import { Alert, Button, Input } from 'antd'
 import { useId, useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { login } from '../../api/auth'
+import { USE_MOCK } from '../../api/config'
 import { PageHeader } from '../../components/PageHeader'
-import { DEMO_USERS } from '../../api/mock/system'
 import { useAuthPhase, useAuthStore } from '../../stores/authStore'
+import { errorMessage } from '../../utils/apiError'
+import { readStatePath, readStateString } from '../../utils/routeState'
+import { validateAccount, validateRequired } from '../../utils/validators'
 import './auth.css'
 
 interface LoginErrors {
@@ -11,21 +15,18 @@ interface LoginErrors {
   password?: string
 }
 
-/** 从路由 state 安全读取来源路径（登录后回跳） */
-function readFromPath(state: unknown): string | undefined {
-  if (typeof state === 'object' && state !== null && 'from' in state) {
-    const from = state.from
-    if (typeof from === 'string' && from.startsWith('/')) {
-      return from
-    }
-  }
-  return undefined
-}
+/** mock 演示账号（VITE_USE_MOCK=true 时展示，便于三态走查） */
+const MOCK_HINT_ACCOUNTS = [
+  'student01（未认证学生）',
+  'student02（已认证学生）',
+  'student03（被驳回学生）',
+  'admin01（管理员）',
+]
 
 /**
- * 登录页（批次 0 占位）：完整表单无障碍示范——
- * label 关联、aria-required / aria-invalid / aria-describedby、错误 role="alert"。
- * 批次 0 无登录接口：校验通过后以演示身份登录（未认证学生态），批次 1 接入真实接口。
+ * 登录页：account（用户名或学号）+ password。
+ * 成功 → setAuth(access_token, user) → 按 from 参数或角色回首页；
+ * 2005 表单级错误、1006 限流提示（含剩余时间语感）、2006 封禁提示，均 role="alert" 可见反馈。
  */
 export function LoginPage() {
   const accountId = useId()
@@ -35,9 +36,14 @@ export function LoginPage() {
   const location = useLocation()
   const setAuth = useAuthStore((s) => s.setAuth)
 
-  const [account, setAccount] = useState('')
+  const [account, setAccount] = useState(() => readStateString(location.state, 'account') ?? '')
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState<LoginErrors>({})
+  const [formError, setFormError] = useState<string | null>(null)
+  const [formNotice, setFormNotice] = useState<string | null>(() =>
+    readStateString(location.state, 'notice') ?? null,
+  )
+  const [submitting, setSubmitting] = useState(false)
 
   // 页面入口守卫（与路由层 GuestOnly 双层拦截）
   if (phase !== 'guest') {
@@ -46,29 +52,44 @@ export function LoginPage() {
 
   function validate(): boolean {
     const next: LoginErrors = {}
-    if (!account.trim()) {
-      next.account = '请输入账号'
-    }
-    if (!password) {
-      next.password = '请输入密码'
-    } else if (password.length < 8) {
-      next.password = '密码长度不得低于 8 位'
-    }
+    const accountError = validateAccount(account)
+    if (accountError) next.account = accountError
+    const passwordError = validateRequired(password, '密码')
+    if (passwordError) next.password = passwordError
     setErrors(next)
     return Object.keys(next).length === 0
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setFormError(null)
+    setFormNotice(null)
     if (!validate()) return
-    setAuth('demo-token-unverified', DEMO_USERS.unverified)
-    navigate(readFromPath(location.state) ?? '/', { replace: true })
+    setSubmitting(true)
+    try {
+      const data = await login({ account: account.trim(), password })
+      setAuth(data.access_token, data.user)
+      const from = readStatePath(location.state, 'from')
+      const fallback = data.user.role === 'admin' ? '/admin' : '/'
+      navigate(from ?? fallback, { replace: true })
+    } catch (error) {
+      setFormError(errorMessage(error, '登录失败，请稍后重试'))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
     <div className="page-container auth-page">
-      <PageHeader title="登录" description="使用校园账号登录平台（接口批次 1 上线，当前为演示登录）" />
+      <PageHeader title="登录" description="使用用户名或学号登录校园二手交易平台" />
       <form className="auth-form" onSubmit={handleSubmit} noValidate>
+        {formNotice && (
+          <Alert type="success" showIcon role="status" message={formNotice} />
+        )}
+        {formError && (
+          <Alert type="error" showIcon role="alert" message={formError} />
+        )}
+
         <div className="form-field">
           <label htmlFor={accountId} className="form-field__label">
             账号
@@ -87,7 +108,7 @@ export function LoginPage() {
           />
           {!errors.account && (
             <p id={`${accountId}-hint`} className="form-field__hint">
-              学号或邮箱（字段契约随批次 1 定稿）
+              用户名或学号
             </p>
           )}
           {errors.account && (
@@ -120,10 +141,17 @@ export function LoginPage() {
           )}
         </div>
 
-        <Button type="primary" htmlType="submit" block>
+        <Button type="primary" htmlType="submit" block loading={submitting} aria-busy={submitting}>
           登录
         </Button>
       </form>
+
+      {USE_MOCK && (
+        <p className="auth-form__demo">
+          演示账号（密码均为 Pass1234）：{MOCK_HINT_ACCOUNTS.join(' / ')}
+        </p>
+      )}
+
       <p className="auth-form__links">
         还没有账号？<Link to="/register">注册</Link>
         <span aria-hidden="true">·</span>
