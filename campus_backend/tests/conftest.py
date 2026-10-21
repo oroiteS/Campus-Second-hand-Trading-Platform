@@ -108,15 +108,19 @@ def school_fixtures(db_create_all):
     multi = School(name="示例大学", multi_campus=True, status="enabled")
     east = Campus(school=multi, name="东校区", status="enabled")
     west = Campus(school=multi, name="西校区", status="enabled")
+    disabled_campus = Campus(school=multi, name="停用校区", status="disabled")
     single = School(name="示例学院", multi_campus=False, status="enabled")
     main_campus = Campus(school=single, name="主校区", status="enabled")
     disabled = School(name="停用学院", multi_campus=False, status="disabled")
-    db.session.add_all([multi, east, west, single, main_campus, disabled])
+    db.session.add_all(
+        [multi, east, west, disabled_campus, single, main_campus, disabled]
+    )
     db.session.commit()
     return SimpleNamespace(
         multi=multi,
         east=east,
         west=west,
+        disabled_campus=disabled_campus,
         single=single,
         main_campus=main_campus,
         disabled=disabled,
