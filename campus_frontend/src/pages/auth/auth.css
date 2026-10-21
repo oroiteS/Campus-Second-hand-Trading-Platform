@@ -45,3 +45,11 @@
 .auth-form__links a {
   margin-inline-end: var(--space-2);
 }
+
+.auth-form__demo {
+  margin: var(--space-4) 0 0;
+  max-width: 26rem;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
