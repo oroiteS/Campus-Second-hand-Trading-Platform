@@ -14,9 +14,10 @@ import { MOCK_SCHOOLS } from './schools'
 const APPLICATIONS_BY_USER = new Map<number, AuthApplication[]>()
 
 function seedApplications(): void {
+  // 种子仅兜底无记录用户：已有记录（可能含用户刚提交的申请）时跳过，避免补种覆盖。
   const student02 = MOCK_ACCOUNTS.find((account) => account.profile.id === 1002)
   const student03 = MOCK_ACCOUNTS.find((account) => account.profile.id === 1003)
-  if (student02) {
+  if (student02 && !APPLICATIONS_BY_USER.has(student02.profile.id)) {
     APPLICATIONS_BY_USER.set(student02.profile.id, [
       {
         id: 5,
@@ -32,7 +33,7 @@ function seedApplications(): void {
       },
     ])
   }
-  if (student03) {
+  if (student03 && !APPLICATIONS_BY_USER.has(student03.profile.id)) {
     APPLICATIONS_BY_USER.set(student03.profile.id, [
       {
         id: 8,
