@@ -156,6 +156,73 @@
   padding: var(--space-2) 0;
 }
 
+/* ---- 认证申请历史 ---- */
+.cert-history {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.cert-history__item {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface-variant);
+}
+
+.cert-history__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cert-history__school {
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.cert-history__time {
+  margin-inline-start: auto;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.cert-history__detail {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+}
+
+@media (min-width: 768px) {
+  .cert-history__detail {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+}
+
+.cert-history__detail div {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.cert-history__detail dt {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.cert-history__detail dd {
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+/* ---- 学生证照片预览 ---- */
+.cert-preview {
+  max-width: 100%;
+  max-height: 16rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  object-fit: contain;
+}
+
 /* ---- 旧版资料列表（兼容保留） ---- */
 .profile-list {
   display: grid;
