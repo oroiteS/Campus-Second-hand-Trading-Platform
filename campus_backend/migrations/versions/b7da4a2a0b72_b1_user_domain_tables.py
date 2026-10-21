@@ -7,12 +7,17 @@ Create Date: 2026-10-21 09:07:21.665615
 表名经 ``src.model.prefix()`` 统一包裹：随 ``DB_TABLE_PREFIX`` 环境变量
 变化（主仓无前缀、开发槽位 ``b1be-``、集成 ``int1-``），业务代码与
 Alembic 版本表（app.py 装配时注入）保持同一前缀机制。
+
+成环 FK 约束名同样经前缀机制（``src.model.FK_USERS_AVATAR_IMAGE``，
+与模型处单一来源）：MySQL 8.0+ 要求外键约束名 schema 内唯一（重复
+报错 1826），裸名会让主仓与同库 worktree 各自 upgrade 撞名。索引名 /
+唯一约束名仅表内唯一，维持裸名。
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-from src.model import prefix
+from src.model import FK_USERS_AVATAR_IMAGE, prefix
 
 # revision identifiers, used by Alembic.
 revision = 'b7da4a2a0b72'
@@ -65,7 +70,7 @@ def upgrade():
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
             ['avatar_image_id'], [prefix("images.id")],
-            name='fk_users_avatar_image', use_alter=True,
+            name=FK_USERS_AVATAR_IMAGE, use_alter=True,
         ),
         sa.ForeignKeyConstraint(['campus_id'], [prefix("campuses.id")]),
         sa.ForeignKeyConstraint(['school_id'], [prefix("schools.id")]),
@@ -116,7 +121,7 @@ def upgrade():
     # users ↔ images 成环 FK（use_alter）：create_table 会跳过它，
     # 两表都存在后再显式补建（列级索引由 MySQL 随约束自动创建）。
     op.create_foreign_key(
-        'fk_users_avatar_image', prefix("users"), prefix("images"),
+        FK_USERS_AVATAR_IMAGE, prefix("users"), prefix("images"),
         ['avatar_image_id'], ['id'],
     )
 
@@ -124,7 +129,7 @@ def upgrade():
 def downgrade():
     # 成环 FK 先显式摘除；二级索引随 DROP TABLE 一并消失——MySQL 中
     # idx_user_status / idx_school_auth 同时充当外键所需索引，不能先删。
-    op.drop_constraint('fk_users_avatar_image', prefix("users"), type_='foreignkey')
+    op.drop_constraint(FK_USERS_AVATAR_IMAGE, prefix("users"), type_='foreignkey')
     op.drop_table(prefix("auth_applications"))
     op.drop_table(prefix("images"))
     op.drop_table(prefix("users"))

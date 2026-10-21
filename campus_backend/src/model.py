@@ -28,8 +28,21 @@ def prefix(name: str) -> str:
     无法读 ``app.config``，故此处直接 ``os.getenv``。其成立的前提是
     ``src/app.py`` 的 import 顺序保证 ``src.config``（load_dotenv）先于
     本模块加载；除本函数外，项目任何位置不得直接读环境变量。
+
+    同机制也适用于 **schema 级唯一**的显式命名：外键约束名在 MySQL 8.0+
+    要求数据库内唯一（重复报错 1826），不随表名加前缀会让主仓与同库
+    worktree 各自 upgrade 撞名，因此同样经 ``prefix()`` 生成（见下方
+    ``FK_USERS_AVATAR_IMAGE``）。普通/唯一索引名仅要求表内唯一
+    （MySQL 跨表同名索引合法），保持裸名，不参与前缀。
     """
     return f"{os.getenv('DB_TABLE_PREFIX', '')}{name}"
+
+
+# users.avatar_image_id → images.id 成环 FK 的显式约束名：模型与迁移脚本
+# （ForeignKeyConstraint 声明 / create_foreign_key / drop_constraint 三处）
+# 一律引用本常量，单一来源；主仓空前缀 → ``fk_users_avatar_image``，
+# worktree ``b1be-`` → ``b1be-fk_users_avatar_image``。
+FK_USERS_AVATAR_IMAGE = prefix("fk_users_avatar_image")
 
 
 def _cst_now() -> datetime:
@@ -153,10 +166,11 @@ class User(db.Model):
         db.ForeignKey(prefix("campuses.id")),
         nullable=True,
     )
-    # users ↔ images 双向引用成环，该侧 FK 以 use_alter 后置 ALTER 创建
+    # users ↔ images 双向引用成环，该侧 FK 以 use_alter 后置 ALTER 创建；
+    # 约束名与迁移脚本共用 FK_USERS_AVATAR_IMAGE（MySQL 8.0+ schema 级唯一）
     avatar_image_id = db.Column(
         db.BigInteger().with_variant(db.Integer, "sqlite"),
-        db.ForeignKey(prefix("images.id"), name="fk_users_avatar_image", use_alter=True),
+        db.ForeignKey(prefix("images.id"), name=FK_USERS_AVATAR_IMAGE, use_alter=True),
         nullable=True,
     )
     role = db.Column(db.String(16), nullable=False, default="student")
