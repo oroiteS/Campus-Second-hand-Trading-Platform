@@ -1,6 +1,5 @@
 import { Suspense } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { AuthDemoSwitcher } from '../components/AuthDemoSwitcher'
 import { RouteLoading } from '../components/RouteLoading'
 import './AdminLayout.css'
 
@@ -38,7 +37,6 @@ export function AdminLayout() {
         <div className="admin-layout__content">
           <header className="admin-layout__header">
             <span className="admin-layout__scope">校园二手交易平台 · 管理端</span>
-            <AuthDemoSwitcher />
           </header>
           <main id="main-content" className="admin-layout__main" tabIndex={-1}>
             <Suspense fallback={<RouteLoading />}>

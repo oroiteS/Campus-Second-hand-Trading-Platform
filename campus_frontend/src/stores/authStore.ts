@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { DEMO_USERS } from '../api/mock/system'
-import type { UserSummary } from '../types'
+import type { UserProfile } from '../types'
 
 /**
  * 路由四态（权限矩阵界面落点）：
@@ -14,11 +13,12 @@ export type AuthPhase = 'guest' | 'unverified' | 'student' | 'admin'
 
 interface AuthState {
   token: string | null
-  user: UserSummary | null
-  setAuth: (token: string, user: UserSummary) => void
+  user: UserProfile | null
+  /** 登录成功：写入 access_token 与用户完整资料（LoginData.user） */
+  setAuth: (token: string, user: UserProfile) => void
+  /** 登录后局部刷新资料（改资料/头像/认证状态流转），令牌不变 */
+  setUser: (user: UserProfile) => void
   clearAuth: () => void
-  /** 开发演示：一键切换四态，验证路由守卫（批次 0 无登录接口） */
-  setDemoPhase: (phase: AuthPhase) => void
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -27,26 +27,20 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       user: null,
       setAuth: (token, user) => set({ token, user }),
+      setUser: (user) => set({ user }),
       clearAuth: () => set({ token: null, user: null }),
-      setDemoPhase: (phase) => {
-        if (phase === 'guest') {
-          set({ token: null, user: null })
-          return
-        }
-        set({ token: `demo-token-${phase}`, user: DEMO_USERS[phase] })
-      },
     }),
     { name: 'campus-auth' },
   ),
 )
 
-function phaseOf(token: string | null, user: UserSummary | null): AuthPhase {
+function phaseOf(token: string | null, user: UserProfile | null): AuthPhase {
   if (!token || !user) return 'guest'
   if (user.role === 'admin') return 'admin'
   return user.auth_status === 'approved' ? 'student' : 'unverified'
 }
 
-/** 派生四态；认证状态与角色以用户信息为准，不本地推测 */
+/** 派生四态；认证状态与角色以接口返回的用户信息为准，不本地推测 */
 export function useAuthPhase(): AuthPhase {
   const token = useAuthStore((s) => s.token)
   const user = useAuthStore((s) => s.user)

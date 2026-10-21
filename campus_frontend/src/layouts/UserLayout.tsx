@@ -1,6 +1,5 @@
 import { Suspense } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
-import { AuthDemoSwitcher } from '../components/AuthDemoSwitcher'
 import { RouteLoading } from '../components/RouteLoading'
 import { useAuthPhase, useAuthStore } from '../stores/authStore'
 import './UserLayout.css'
@@ -61,7 +60,6 @@ export function UserLayout() {
                 登录
               </Link>
             )}
-            <AuthDemoSwitcher />
           </div>
         </div>
       </header>

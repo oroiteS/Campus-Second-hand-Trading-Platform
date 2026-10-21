@@ -1,5 +1,4 @@
 import dayjs from 'dayjs'
-import type { UserSummary } from '../../types'
 import { delay } from '../../utils/delay'
 import type { components } from '../types'
 
@@ -27,27 +26,3 @@ export function mockGetHealth(): Promise<HealthData> {
   })
 }
 
-/** 演示用用户概要（批次 0 无登录接口，结构与 UserSummary 同构） */
-export const DEMO_USERS: Record<'unverified' | 'student' | 'admin', UserSummary> = {
-  unverified: {
-    id: 1001,
-    display_name: '小明',
-    nickname: '小明',
-    auth_status: 'unverified',
-    role: 'student',
-  },
-  student: {
-    id: 1002,
-    display_name: '小明-示例大学(东校区)',
-    nickname: '小明',
-    auth_status: 'approved',
-    role: 'student',
-  },
-  admin: {
-    id: 9001,
-    display_name: '管理员',
-    nickname: '管理员',
-    auth_status: 'approved',
-    role: 'admin',
-  },
-}

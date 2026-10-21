@@ -74,6 +74,296 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 注册
+         * @description **公开**。用户名 + 密码 + 邮箱 + 学号注册；昵称可选，缺省取
+         *     `username`。注册成功**不签发令牌**，需再调用 `POST /auth/login`；
+         *     `username` 与 `student_no` 注册后不可修改。
+         *
+         *     - 字段校验（双端同源唯一口径，pattern 见 `RegisterInput`）失败
+         *       统一 `422 / 9001`，`data.fields` 携带字段级错误。
+         *     - 唯一性冲突：用户名已存在 `409 / 2001`；学号已被注册 `409 / 2002`。
+         *     - 密码落库为 bcrypt 加盐哈希（NFR-05），任何链路不得明文、不得
+         *       可逆加密、不得以无盐快速哈希替代。
+         */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 登录
+         * @description **公开**。用户名或学号 + 密码登录，签发 JWT（flask-jwt-extended，
+         *     identity = 用户 id）。`account` 先按 `username` 精确匹配，未命中
+         *     按 `student_no` 匹配。
+         *
+         *     - 用户名或密码错误 `401 / 2005`；账号已被封禁 `403 / 2006`——
+         *       封禁用户即使密码正确也返回 `2006`，且按一次失败计入限流。
+         *     - 连续失败 5 次后 10 分钟内返回 `429 / 1006`（限流键
+         *       `rate:login:{ip}`，登录成功清零计数）。
+         */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 登出
+         * @description 需登录（不要求校园认证状态）。无请求体；将当前令牌 `jti` 写入
+         *     Redis 黑名单 `auth:blacklist:{jti}`，TTL 为令牌剩余有效期。
+         *
+         *     - 正常：`data` 为空对象 `{}`。
+         *     - Redis 故障降级：仍返回 200，`data` 为
+         *       `{ degraded: true, degraded_reason: <原因摘要> }`——黑名单未落，
+         *       令牌仍有效至自然过期，服务端日志告警（降级显式可见）。
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重置密码
+         * @description **公开**。用户名 + 学号或邮箱 + 新密码重置（不发邮件、不发短信）。
+         *     成功后不清除已签发令牌（无会话管理需求，YAGNI）。
+         *
+         *     - 凭证不匹配（用户名与所选渠道的学号/邮箱对不上）返回
+         *       `422 / 2004`；**用户名不存在同样返回 `2004`**，不泄露用户名
+         *       存在性（防探测）。
+         *     - 字段校验失败 `422 / 9001`（新密码强度等，`data.fields` 字段级）。
+         */
+        post: operations["resetPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取个人资料
+         * @description 需登录。当前登录用户的完整资料（个人中心首屏）；`UserProfile`
+         *     为完整形态，与 `UserSummary` 概要形态并存。未认证或未设置的
+         *     字段（`phone` / `avatar` / `school` / `campus` / `credit_score`）
+         *     为 null。
+         */
+        get: operations["getMyProfile"];
+        /**
+         * 更新个人资料
+         * @description 需登录。`nickname` / `email` / `phone` 三字段均可选，仅更新请求体
+         *     中出现的字段；`username` / `student_no` 不在请求体中（注册后
+         *     不可改）。`phone` 填写时须为 1 开头的 11 位纯数字，**传空串表示
+         *     清除**；更新后展示名按认证状态联动重算（AC-04）。
+         *
+         *     - 字段校验失败 `422 / 9001`（`data.fields` 字段级错误）。
+         */
+        put: operations["updateMyProfile"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/me/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 修改密码
+         * @description 需登录。校验原密码后设置新密码（强度同注册规则）。成功后已签发
+         *     令牌不强制失效（无会话管理需求）。
+         *
+         *     - 原密码错误 `400 / 2003`；新密码强度不符 `422 / 9001`。
+         */
+        put: operations["updateMyPassword"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/me/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 上传头像
+         * @description 需登录。`multipart/form-data` 上传头像，form 字段 `file`：单文件
+         *     jpg/png/webp，≤ 5 MB。服务端四件套校验（扩展名 + MIME + 大小 +
+         *     内容哈希改名），落 `uploads/avatar/<年月>/`；旧头像文件保留不删
+         *     （images 表仅增不改，YAGNI）。
+         *
+         *     - 类型或大小不符 `422 / 9001`，`data.fields.file` 携带原因。
+         */
+        post: operations["uploadMyAvatar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/certification/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 提交校园认证申请
+         * @description 需登录且 `role = student` 且 `auth_status ∈ {unverified, rejected}`。
+         *     `multipart/form-data` 提交：选校（多校区学校必选校区，单校区须
+         *     省略）、真实姓名、学生证照片；`student_no` 须与注册学号**完全
+         *     一致**（防代认证）。提交后用户 `auth_status` 置为 pending，申请
+         *     进入审核队列（审核动作属批次 5 管理域）。历史申请保留，驳回后
+         *     可重提。
+         *
+         *     - 表单校验（缺校区 / 学号与注册不一致 / 学校停用或不存在 / 文件
+         *       类型或大小不符）`422 / 9001`，`data.fields` 字段级错误。
+         *     - 当前状态不允许提交（pending / approved）`409 / 9003`；管理员
+         *       提交亦返回 `9003` 并在 message 说明管理员无需认证
+         *       （`403 / 1005` 语义不适用）。
+         */
+        post: operations["submitAuthApplication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/certification/applications/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 我的认证申请历史
+         * @description 需登录。当前用户全部认证申请，按 `created_at` 倒序；**不分页**——
+         *     个人历史申请量小，一次取全的收益大于分页复杂度（含 pending /
+         *     approved / rejected 及驳回原因，供前端展示历史与重提入口）。
+         */
+        get: operations["listMyAuthApplications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/schools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 学校与校区公开列表
+         * @description **公开**（游客即可查）。全部**启用**状态的学校与校区，按名称
+         *     排序；**不分页**——数据量小，注册 / 认证页选择器需一次取全。
+         *     无业务错误。
+         */
+        get: operations["listSchools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/images/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 图片实体鉴权访问
+         * @description 需登录。返回图片实体二进制（`image/jpeg|png|webp`）。**本接口不走
+         *     统一响应体 envelope**，直接输出文件流；出错时仍按 `ErrorEnvelope`
+         *     的 JSON 结构返回错误体。
+         *
+         *     - 访问控制（NFR-08）：`purpose = student_card` 的图片**仅上传者
+         *       本人与管理员**可读；其余（本批次仅 `avatar`）登录即可读。
+         *     - 越权与不存在一律 `404 / 9002`，不区分两种情况（防探测）。
+         *     - 批次 2 起商品图、批次 4 聊天图复用本接口，`purpose` 值域随
+         *       批次扩展。
+         */
+        get: operations["getImage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -162,8 +452,8 @@ export interface components {
             embedding: components["schemas"]["EmbeddingHealth"];
         };
         /**
-         * @description 图片引用。实体文件经后端鉴权路由 `/api/images/{id}` 访问
-         *     （该接口随批次 1 落地），不暴露可枚举静态目录。
+         * @description 图片引用。实体文件经后端鉴权路由 `GET /api/images/{id}` 访问，
+         *     不暴露可枚举静态目录。
          */
         ImageRef: {
             /** Format: int64 */
@@ -216,7 +506,8 @@ export interface components {
             avatar?: components["schemas"]["ImageRef"] | null;
             /**
              * @description 信誉分：该用户收到的全部评价评分的算术平均，两位小数；
-             *     无评价为 null，前端展示「暂无」（FR-ORD-09）。
+             *     无评价为 null（批次 3 起有评价后非空），前端展示「暂无」
+             *     （FR-ORD-09）。
              * @example 4.67
              */
             credit_score?: number | null;
@@ -260,6 +551,139 @@ export interface components {
              * @description 发布时间（ISO 8601，+08:00）。
              */
             created_at: string;
+        };
+        /** @description 个人资料完整形态（与 UserSummary 概要形态并存）。 */
+        UserProfile: {
+            /** Format: int64 */
+            id: number;
+            /** @description 用户名（注册后不可修改）。 */
+            username: string;
+            /** @description 学号（注册后不可修改）。 */
+            student_no: string;
+            /** Format: email */
+            email: string;
+            nickname: string;
+            /**
+             * @description 展示名，规则同 UserSummary（FR-USR-10）。
+             * @example 小张-示例大学(东校区)
+             */
+            display_name: string;
+            /** @description 手机号：1 开头的 11 位纯数字；未设置为 null。 */
+            phone?: string | null;
+            avatar?: components["schemas"]["ImageRef"] | null;
+            /** @description 认证通过后展示；未认证为 null。 */
+            school?: components["schemas"]["SchoolRef"] | null;
+            /** @description 多校区学校认证通过后展示；未认证 / 单校区为 null。 */
+            campus?: components["schemas"]["CampusRef"] | null;
+            role: components["schemas"]["Role"];
+            auth_status: components["schemas"]["AuthStatus"];
+            status: components["schemas"]["UserAccountStatus"];
+            /** @description 信誉分；批次 3 起有评价后非空。 */
+            credit_score?: number | null;
+            /**
+             * Format: date-time
+             * @description 注册时间（ISO 8601，+08:00）。
+             */
+            created_at: string;
+        };
+        /** @description 登录成功数据体。 */
+        LoginData: {
+            /** @description JWT（flask-jwt-extended 签发，identity = 用户 id）。 */
+            access_token: string;
+            /** @example Bearer */
+            token_type: string;
+            /** @description 令牌有效期（秒，JWT_EXPIRE_MINUTES × 60）。 */
+            expires_in: number;
+            user: components["schemas"]["UserProfile"];
+        };
+        /** @description 校园认证申请（新提交只会出现 pending；历史含 rejected）。 */
+        AuthApplication: {
+            /** Format: int64 */
+            id: number;
+            school: components["schemas"]["SchoolRef"];
+            campus?: components["schemas"]["CampusRef"] | null;
+            student_no: string;
+            real_name: string;
+            student_card: components["schemas"]["ImageRef"];
+            status: components["schemas"]["AuthStatus"];
+            /** @description 驳回原因（管理员填写）；非 rejected 为 null。 */
+            reject_reason?: string | null;
+            /**
+             * Format: date-time
+             * @description 审核时间；未审核为 null。
+             */
+            reviewed_at?: string | null;
+            /**
+             * Format: date-time
+             * @description 提交时间（ISO 8601，+08:00）。
+             */
+            created_at: string;
+        };
+        /** @description 学校概要 + 校区列表（公开列表元素）。 */
+        SchoolWithCampuses: components["schemas"]["SchoolRef"] & {
+            campuses: components["schemas"]["CampusRef"][];
+        };
+        /** @description 注册请求体（注册成功不签发令牌）。 */
+        RegisterInput: {
+            /** @description 用户名（1–32 位，字母开头，仅字母/数字/下划线），注册后不可修改。 */
+            username: string;
+            /** @description 密码（8–64 位，须同时包含字母与数字）；落库为 bcrypt 加盐哈希（NFR-05）。 */
+            password: string;
+            /**
+             * Format: email
+             * @description 邮箱。
+             */
+            email: string;
+            /** @description 学号（1–32 字符，不限定纯数字），注册后不可修改。 */
+            student_no: string;
+            /** @description 昵称（1–32 字符），可选，缺省取 username。 */
+            nickname?: string;
+        };
+        /** @description 登录请求体（account 先按用户名精确匹配，未命中按学号匹配）。 */
+        LoginInput: {
+            /** @description 用户名或学号（1–32 字符）。 */
+            account: string;
+            /** @description 密码明文（仅与 bcrypt 哈希比对，登录时不校验强度）。 */
+            password: string;
+        };
+        /** @description 密码重置请求体（不发邮件短信；凭证不匹配与用户名不存在一律 2004，防探测）。 */
+        PasswordResetInput: {
+            /** @description 用户名。 */
+            username: string;
+            /**
+             * @description 重置凭证渠道：student_no 学号 / email 邮箱。
+             * @enum {string}
+             */
+            reset_channel: "student_no" | "email";
+            /** @description 凭证值；渠道为 student_no 时须与注册学号一致，为 email 时须与注册邮箱一致。 */
+            reset_value: string;
+            /** @description 新密码（8–64 位，须同时包含字母与数字）。 */
+            new_password: string;
+        };
+        /**
+         * @description 个人资料更新请求体：三字段均可选，仅更新请求体中出现的字段；
+         *     username / student_no 不可改，不在请求体中。
+         */
+        ProfileUpdateInput: {
+            /** @description 昵称（1–32 字符）。 */
+            nickname?: string;
+            /**
+             * Format: email
+             * @description 邮箱。
+             */
+            email?: string;
+            /**
+             * @description 手机号：填写时为 1 开头的 11 位纯数字；**传空串表示清除**
+             *     （服务端对空串放行），未设置为 null。
+             */
+            phone?: string | null;
+        };
+        /** @description 修改密码请求体（须校验原密码，原密码错误返回 400 / 2003）。 */
+        PasswordChangeInput: {
+            /** @description 原密码。 */
+            old_password: string;
+            /** @description 新密码（8–64 位，须同时包含字母与数字）。 */
+            new_password: string;
         };
         /**
          * @description 角色：student 学生 / admin 管理员（管理员不能发布商品或下单）。
@@ -536,6 +960,732 @@ export interface operations {
                     "text/html": string;
                 };
             };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "username": "zhangsan01",
+                 *       "password": "Pass1234",
+                 *       "email": "zhangsan01@example.edu.cn",
+                 *       "student_no": "2024010101",
+                 *       "nickname": "小张"
+                 *     }
+                 */
+                "application/json": components["schemas"]["RegisterInput"];
+            };
+        };
+        responses: {
+            /** @description 注册成功，返回新建用户资料（不签发令牌）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 1,
+                     *         "username": "zhangsan01",
+                     *         "student_no": "2024010101",
+                     *         "email": "zhangsan01@example.edu.cn",
+                     *         "nickname": "小张",
+                     *         "display_name": "小张",
+                     *         "phone": null,
+                     *         "avatar": null,
+                     *         "school": null,
+                     *         "campus": null,
+                     *         "role": "student",
+                     *         "auth_status": "unverified",
+                     *         "status": "active",
+                     *         "credit_score": null,
+                     *         "created_at": "2026-10-20T15:04:05+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["UserProfile"];
+                    };
+                };
+            };
+            /** @description 用户名已存在（code 2001）或学号已被注册（code 2002）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "account": "zhangsan01",
+                 *       "password": "Pass1234"
+                 *     }
+                 */
+                "application/json": components["schemas"]["LoginInput"];
+            };
+        };
+        responses: {
+            /** @description 登录成功，返回访问令牌与用户资料。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZGVudGl0eSI6IjEiLCJqdGkiOiJiMWFwaS1kZW1vIn0.sig",
+                     *         "token_type": "Bearer",
+                     *         "expires_in": 86400,
+                     *         "user": {
+                     *           "id": 1,
+                     *           "username": "zhangsan01",
+                     *           "student_no": "2024010101",
+                     *           "email": "zhangsan01@example.edu.cn",
+                     *           "nickname": "小张",
+                     *           "display_name": "小张",
+                     *           "phone": null,
+                     *           "avatar": null,
+                     *           "school": null,
+                     *           "campus": null,
+                     *           "role": "student",
+                     *           "auth_status": "unverified",
+                     *           "status": "active",
+                     *           "credit_score": null,
+                     *           "created_at": "2026-10-20T15:04:05+08:00"
+                     *         }
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["LoginData"];
+                    };
+                };
+            };
+            /** @description 用户名或密码错误（code 2005；不区分用户名不存在与密码错误，防探测）。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 2005,
+                     *       "message": "用户名或密码错误",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 账号已被封禁（code 2006；即使密码正确亦拒绝，并按一次失败计入限流）。 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 2006,
+                     *       "message": "账号已被封禁",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description 登出成功。正常 `data = {}`；Redis 故障降级时 `data` 为
+             *     `{ degraded: true, degraded_reason: string }`（令牌有效至自然过期）。
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {}
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        /** @description 正常为空对象；Redis 故障降级时含 degraded 标记与 degraded_reason。 */
+                        data?: Record<string, never>;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    resetPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "username": "zhangsan01",
+                 *       "reset_channel": "student_no",
+                 *       "reset_value": "2024010101",
+                 *       "new_password": "NewPass1234"
+                 *     }
+                 */
+                "application/json": components["schemas"]["PasswordResetInput"];
+            };
+        };
+        responses: {
+            /** @description 重置成功（data 为 null；已签发令牌不清除）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        /** @description 固定为 null。 */
+                        data?: unknown;
+                    };
+                };
+            };
+            /** @description 重置凭证不匹配（code 2004；用户名不存在亦返回该码，防探测）或参数校验失败（code 9001）。 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getMyProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 当前用户资料。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 1,
+                     *         "username": "zhangsan01",
+                     *         "student_no": "2024010101",
+                     *         "email": "zhangsan01@example.edu.cn",
+                     *         "nickname": "小张",
+                     *         "display_name": "小张-示例大学(东校区)",
+                     *         "phone": "13800138000",
+                     *         "avatar": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "school": {
+                     *           "id": 1,
+                     *           "name": "示例大学",
+                     *           "multi_campus": true
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "role": "student",
+                     *         "auth_status": "approved",
+                     *         "status": "active",
+                     *         "credit_score": null,
+                     *         "created_at": "2026-10-20T15:04:05+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["UserProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    updateMyProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "nickname": "小明明",
+                 *       "phone": "13800138000"
+                 *     }
+                 */
+                "application/json": components["schemas"]["ProfileUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description 更新成功，返回最新资料。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 1,
+                     *         "username": "zhangsan01",
+                     *         "student_no": "2024010101",
+                     *         "email": "zhangsan01@example.edu.cn",
+                     *         "nickname": "小明明",
+                     *         "display_name": "小明明-示例大学(东校区)",
+                     *         "phone": "13800138000",
+                     *         "avatar": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "school": {
+                     *           "id": 1,
+                     *           "name": "示例大学",
+                     *           "multi_campus": true
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "role": "student",
+                     *         "auth_status": "approved",
+                     *         "status": "active",
+                     *         "credit_score": null,
+                     *         "created_at": "2026-10-20T15:04:05+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["UserProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    updateMyPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "old_password": "Pass1234",
+                 *       "new_password": "NewPass1234"
+                 *     }
+                 */
+                "application/json": components["schemas"]["PasswordChangeInput"];
+            };
+        };
+        responses: {
+            /** @description 修改成功（data 为 null）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        /** @description 固定为 null。 */
+                        data?: unknown;
+                    };
+                };
+            };
+            /** @description 原密码错误（code 2003）。 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 2003,
+                     *       "message": "原密码错误",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    uploadMyAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description 头像图片文件（jpg/png/webp，≤ 5 MB）。
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 上传成功，返回最新资料（avatar 字段已更新）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 1,
+                     *         "username": "zhangsan01",
+                     *         "student_no": "2024010101",
+                     *         "email": "zhangsan01@example.edu.cn",
+                     *         "nickname": "小张",
+                     *         "display_name": "小张",
+                     *         "phone": null,
+                     *         "avatar": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "school": null,
+                     *         "campus": null,
+                     *         "role": "student",
+                     *         "auth_status": "unverified",
+                     *         "status": "active",
+                     *         "credit_score": null,
+                     *         "created_at": "2026-10-20T15:04:05+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["UserProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    submitAuthApplication: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: int64
+                     * @description 学校 id（经 `GET /schools` 获取）。
+                     */
+                    school_id: number;
+                    /**
+                     * Format: int64
+                     * @description 校区 id；多校区学校必填，单校区学校必须省略。
+                     */
+                    campus_id?: number;
+                    /** @description 真实姓名（1–32 字符）。 */
+                    real_name: string;
+                    /** @description 学号；须与注册学号完全一致。 */
+                    student_no: string;
+                    /**
+                     * Format: binary
+                     * @description 学生证照片文件（jpg/png/webp，≤ 5 MB）。
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 提交成功，返回新建申请（status = pending），用户 auth_status 同步置为 pending。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 7,
+                     *         "school": {
+                     *           "id": 1,
+                     *           "name": "示例大学",
+                     *           "multi_campus": true
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "student_no": "2024010101",
+                     *         "real_name": "张三",
+                     *         "student_card": {
+                     *           "id": 43,
+                     *           "url": "/api/images/43"
+                     *         },
+                     *         "status": "pending",
+                     *         "reject_reason": null,
+                     *         "reviewed_at": null,
+                     *         "created_at": "2026-10-20T15:10:00+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["AuthApplication"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    listMyAuthApplications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 认证申请列表（created_at 倒序，不分页）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": [
+                     *         {
+                     *           "id": 7,
+                     *           "school": {
+                     *             "id": 1,
+                     *             "name": "示例大学",
+                     *             "multi_campus": true
+                     *           },
+                     *           "campus": {
+                     *             "id": 1,
+                     *             "school_id": 1,
+                     *             "name": "东校区"
+                     *           },
+                     *           "student_no": "2024010101",
+                     *           "real_name": "张三",
+                     *           "student_card": {
+                     *             "id": 43,
+                     *             "url": "/api/images/43"
+                     *           },
+                     *           "status": "pending",
+                     *           "reject_reason": null,
+                     *           "reviewed_at": null,
+                     *           "created_at": "2026-10-20T15:10:00+08:00"
+                     *         },
+                     *         {
+                     *           "id": 5,
+                     *           "school": {
+                     *             "id": 1,
+                     *             "name": "示例大学",
+                     *             "multi_campus": true
+                     *           },
+                     *           "campus": null,
+                     *           "student_no": "2024010101",
+                     *           "real_name": "张三",
+                     *           "student_card": {
+                     *             "id": 31,
+                     *             "url": "/api/images/31"
+                     *           },
+                     *           "status": "rejected",
+                     *           "reject_reason": "学生证照片模糊，无法核对学号",
+                     *           "reviewed_at": "2026-10-19T10:00:00+08:00",
+                     *           "created_at": "2026-10-19T09:30:00+08:00"
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["AuthApplication"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listSchools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 学校列表（含校区数组，仅启用，按名称排序，不分页）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": [
+                     *         {
+                     *           "id": 1,
+                     *           "name": "示例大学",
+                     *           "multi_campus": true,
+                     *           "campuses": [
+                     *             {
+                     *               "id": 1,
+                     *               "school_id": 1,
+                     *               "name": "东校区"
+                     *             },
+                     *             {
+                     *               "id": 2,
+                     *               "school_id": 1,
+                     *               "name": "西校区"
+                     *             }
+                     *           ]
+                     *         },
+                     *         {
+                     *           "id": 2,
+                     *           "name": "示例学院",
+                     *           "multi_campus": false,
+                     *           "campuses": [
+                     *             {
+                     *               "id": 3,
+                     *               "school_id": 2,
+                     *               "name": "主校区"
+                     *             }
+                     *           ]
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["SchoolWithCampuses"][];
+                    };
+                };
+            };
+        };
+    };
+    getImage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 图片 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 图片实体二进制（不走统一响应体 envelope）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
         };
     };
 }
