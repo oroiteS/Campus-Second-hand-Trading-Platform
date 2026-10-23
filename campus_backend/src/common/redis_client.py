@@ -4,7 +4,8 @@
 取用。库号分配约定（项目规范「数据与端口隔离」）：自 ``REDIS_DB_BASE``
 起 4 库一组——0 聊天 / 1 评价 / 2 商品 / 3 系统。系统库固定 +3：登录
 限流 ``rate:login:{ip}`` 与 jti 黑名单 ``auth:blacklist:{jti}`` 落这里；
-商品库 +2：商品 detail/category 缓存（b2be）与向量重试队列（b2be2）。
+商品库 +2：商品 detail/category 缓存（b2be）；向量重试队列落系统库
++3（b2be2，任务卡「向量同步」节钉死）。
 """
 
 import redis as redis_lib
