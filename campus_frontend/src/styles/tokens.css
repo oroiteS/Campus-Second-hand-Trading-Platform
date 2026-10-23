@@ -39,6 +39,9 @@
   --color-info: #1d4ed8;
   --color-info-bg: #eff6ff;
 
+  /* ---- 色彩 · 商品卡价格强调（白底对比 5.5:1，AA） ---- */
+  --color-price: #c2410c;
+
   /* ---- 焦点环 ---- */
   --color-focus: #2f54eb;
   --focus-outline: 2px solid var(--color-focus);
@@ -90,6 +93,7 @@
   /* ---- 布局 ---- */
   --container-max: 75rem; /* 1200px 内容最大宽度 */
   --touch-target: 2.75rem; /* 44px 触控目标最小尺寸 */
+  --cover-ratio: 4 / 3; /* 商品封面统一比例（aspect-ratio 令牌） */
 }
 
 /* ---- 暗色模式（令牌同名覆盖） ---- */
@@ -121,6 +125,8 @@
     --color-info-bg: #14203c;
 
     --color-focus: #96a4f7;
+
+    --color-price: #fb923c;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.45);
