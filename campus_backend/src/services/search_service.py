@@ -114,27 +114,16 @@ def _query_prefix() -> str:
 def _like_fallback(
     normalized_q: str, filters: dict, reason: str, page: int, page_size: int
 ) -> dict:
-    """LIKE 降级：MySQL 标题匹配（created_at 倒序）+ degraded 标记。"""
-    from src.common.scope import scoped_query
+    """LIKE 降级：MySQL 标题匹配（created_at 倒序）+ degraded 标记。
 
-    query = scoped_query(Product).filter(
-        Product.status == "on_sale",
-        # %/_ 不转义直配（与列表 keyword 同口径，既有备案；参数化无注入面）
-        Product.title.like(f"%{normalized_q}%"),
-    )
-    if filters["category_id"] is not None:
-        query = query.filter(Product.category_id == filters["category_id"])
-    if filters["condition"] is not None:
-        query = query.filter(Product.condition == filters["condition"])
-    if filters["price_min"] is not None:
-        query = query.filter(Product.price >= filters["price_min"])
-    if filters["price_max"] is not None:
-        query = query.filter(Product.price <= filters["price_max"])
-    if filters["campus_id"] is not None:
-        query = query.filter(Product.campus_id == filters["campus_id"])
-    query = query.order_by(Product.created_at.desc(), Product.id.desc())
-    result = product_service._paginate(
-        query, page, page_size, product_service._SUMMARY_LOADS
+    复用公开的 ``product_service.list_on_sale``（scoped_query + on_sale +
+    keyword LIKE 同口径 + newest 序 + 同分页与概要预载），不依赖其私有
+    ``_paginate``/``_SUMMARY_LOADS``（跨 service 只用公开名）；``filters``
+    为已归一化字典，list_on_sale 内重复校验幂等。``sort`` 钉死 newest，
+    与原降级实现的固定排序保持一致。
+    """
+    result = product_service.list_on_sale(
+        {**filters, "keyword": normalized_q, "sort": "newest"}, page, page_size
     )
     result["degraded"] = True
     result["degraded_reason"] = reason

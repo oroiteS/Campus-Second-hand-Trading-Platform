@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from flask import current_app
 
 from src.common import embedding_client, mongo_client
-from src.services.vector_service import _CST, _now, build_text
+from src.services.vector_service import CST, build_text, now_cst
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def _update_profile(user_id: int, product, weight: float, action: str) -> None:
                 "dim": current_app.config["EMBEDDING_DIM"],
                 "model": embedding_client.active_model(),
                 "behavior_count": behavior_count,
-                "updated_at": _now(),
+                "updated_at": now_cst(),
             }
         },
         upsert=True,
@@ -108,7 +108,7 @@ def _record(user_id: int, product, action: str, source: str, favorited: bool = T
     """流水无条件记录 + 画像 24h 去重更新（收藏取消仅记流水）。"""
     weight = ACTION_WEIGHTS[action]
     behaviors, _profiles = _collections()
-    cutoff = datetime.now(_CST) - timedelta(hours=DEDUP_HOURS)
+    cutoff = datetime.now(CST) - timedelta(hours=DEDUP_HOURS)
     dedup_hit = (
         behaviors.find_one(
             {
@@ -128,7 +128,7 @@ def _record(user_id: int, product, action: str, source: str, favorited: bool = T
             "weight": weight,
             "school_id": int(product.school_id),
             "source": source,
-            "created_at": _now(),
+            "created_at": now_cst(),
         }
     )
     if dedup_hit:

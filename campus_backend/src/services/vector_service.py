@@ -33,16 +33,17 @@ VECTOR_RETRY_QUEUE_KEY = "queue:vector:retry"
 # 重试消息最长存活：超过即丢弃 + error 日志（防死信堆积）
 RETRY_MAX_AGE_S = 24 * 3600
 
-# 统一东八区（与 model.py 时间口径一致）
-_CST = timezone(timedelta(hours=8))
+# 统一东八区（与 model.py 时间口径一致；behavior_service 等跨 service 公开使用）
+CST = timezone(timedelta(hours=8))
 
 
 class VectorDimMismatch(ValueError):
     """embedding 返回维度与 EMBEDDING_DIM 不符（拒写，不进重试队列）。"""
 
 
-def _now() -> datetime:
-    return datetime.now(_CST)
+def now_cst() -> datetime:
+    """当前东八区时间（公开名：behavior_service 记流/去重共用口径）。"""
+    return datetime.now(CST)
 
 
 def build_text(product: Product, category_name: str) -> str:
@@ -131,7 +132,7 @@ def attempt_sync(product: Product) -> None:
                 "school_id": int(product.school_id),
                 "status": product.status,
                 "metadata": metadata,
-                "updated_at": _now(),
+                "updated_at": now_cst(),
             }
         },
         upsert=True,
@@ -174,7 +175,7 @@ def update_status_metadata(product: Product) -> None:
         )
         collection.update_one(
             {"product_id": product_id},
-            {"$set": {"status": product.status, "metadata": metadata, "updated_at": _now()}},
+            {"$set": {"status": product.status, "metadata": metadata, "updated_at": now_cst()}},
         )
     except Exception as exc:  # noqa: BLE001 - 与 sync_product 同一降级口径
         logger.error("向量 metadata 更新失败，进重试队列 product_id=%s: %s", product_id, exc)
