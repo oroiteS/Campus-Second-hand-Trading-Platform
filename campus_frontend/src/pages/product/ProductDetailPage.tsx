@@ -58,7 +58,10 @@ function ProductDetail({ productId }: { productId: number }) {
 
   const [favoriteBusy, setFavoriteBusy] = useState(false)
   const [favoriteNotice, setFavoriteNotice] = useState<string | null>(null)
-  const [statusNotice, setStatusNotice] = useState<string | null>(null)
+  /** 上下架回执：success 区分文案语气（成功走中性/成功样式，失败走错误样式） */
+  const [statusNotice, setStatusNotice] = useState<{ text: string; success: boolean } | null>(
+    null,
+  )
   const [statusBusy, setStatusBusy] = useState(false)
 
   // 首次加载：初始 loading 已为 true，effect 内仅异步落盘（组件按 productId 重挂载）
@@ -87,9 +90,9 @@ function ProductDetail({ productId }: { productId: number }) {
     }
   }, [productId])
 
-  /** 收藏开关：乐观更新，失败（含 9003/3001）精确回滚 UI 状态与计数 */
+  /** 收藏开关：乐观更新，失败（含 9003/3001）精确回滚 UI 状态与计数；非在售直接拦截（3001 前置） */
   function handleToggleFavorite(): void {
-    if (!detail || favoriteBusy) return
+    if (!detail || favoriteBusy || detail.status !== 'on_sale') return
     const prevFavorited = detail.is_favorited
     const prevCount = detail.favorite_count
     const nextFavorited = !prevFavorited
@@ -138,13 +141,14 @@ function ProductDetail({ productId }: { productId: number }) {
     changeProductStatus(detail.id, target)
       .then((summary) => {
         setDetail((prev) => (prev ? { ...prev, status: summary.status } : prev))
-        setStatusNotice(
-          target === 'on_sale' ? '商品已重新上架' : '商品已下架，列表与搜索中将不可见',
-        )
+        setStatusNotice({
+          text: target === 'on_sale' ? '商品已重新上架' : '商品已下架，列表与搜索中将不可见',
+          success: true,
+        })
       })
       .catch((err: unknown) => {
         if (!isTokenInvalidError(err)) {
-          setStatusNotice(errorMessage(err, '状态更新失败，请稍后重试'))
+          setStatusNotice({ text: errorMessage(err, '状态更新失败，请稍后重试'), success: false })
         }
       })
       .finally(() => {
@@ -274,6 +278,12 @@ function ProductDetail({ productId }: { productId: number }) {
                     loading={favoriteBusy}
                     aria-busy={favoriteBusy}
                     aria-pressed={detail.is_favorited}
+                    disabled={detail.status !== 'on_sale'}
+                    title={
+                      detail.status !== 'on_sale'
+                        ? `商品当前状态为${PRODUCT_STATUS_TEXT[detail.status]}，仅上架商品可收藏`
+                        : undefined
+                    }
                   >
                     {detail.is_favorited ? '取消收藏' : '收藏'}
                   </Button>
@@ -297,8 +307,13 @@ function ProductDetail({ productId }: { productId: number }) {
                     </>
                   )}
                   {statusNotice && (
-                    <p className="form-field__error" role="status">
-                      {statusNotice}
+                    <p
+                      className={
+                        statusNotice.success ? 'form-field__success' : 'form-field__error'
+                      }
+                      role="status"
+                    >
+                      {statusNotice.text}
                     </p>
                   )}
                 </div>

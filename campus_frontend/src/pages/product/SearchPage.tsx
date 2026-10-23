@@ -39,10 +39,16 @@ function parseCondition(value: string | null): ProductCondition | null {
   return CONDITIONS.find((item) => item === value) ?? null
 }
 
+/**
+ * 批量更新 URL query（空值删除；筛选变更时重置页码）。
+ * replace：逐字符输入（价格区间）过程中为 true，避免每个字符压入一条历史记录；
+ * 离散变更（下拉/翻页/搜索提交）保持 false，回退可还原上一筛选态。
+ */
 function applyParamPatch(
   navigate: NavigateFunction,
   current: URLSearchParams,
   patch: Record<string, string | null>,
+  options?: { replace?: boolean },
 ): void {
   const next = new URLSearchParams(current)
   for (const [key, value] of Object.entries(patch)) {
@@ -52,7 +58,7 @@ function applyParamPatch(
       next.set(key, value)
     }
   }
-  navigate(`?${next.toString()}`, { replace: false })
+  navigate(`?${next.toString()}`, { replace: options?.replace === true })
 }
 
 /**
@@ -130,7 +136,9 @@ function SearchViewInner() {
     if ('priceMax' in patch) {
       next.price_max = patch.priceMax?.trim() || null
     }
-    applyParamPatch(navigate, searchParams, next)
+    // 逐字符输入（价格区间）过程 replace:true 防历史记录爆炸；离散变更保留回退语义
+    const typing = 'priceMin' in patch || 'priceMax' in patch
+    applyParamPatch(navigate, searchParams, next, { replace: typing })
   }
 
   function handlePageChange(next: number): void {
