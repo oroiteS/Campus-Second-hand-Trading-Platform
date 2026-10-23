@@ -166,7 +166,8 @@ function ProductList({ searchParams, navigate }: ProductListProps) {
       next.price_max = patch.priceMax?.trim() || null
     }
     if ('keyword' in patch) {
-      next.keyword = patch.keyword?.trim() || null
+      // 输入过程保留原值（避免受控回写吞尾随/连续空格），纯空格归空态；trim 仅在取数层 fetchPage 做
+      next.keyword = (patch.keyword ?? '').trim() === '' ? null : (patch.keyword ?? null)
     }
     // 逐字符输入（价格/关键词）过程 replace:true 防历史记录爆炸；离散变更保留回退语义
     const typing =
