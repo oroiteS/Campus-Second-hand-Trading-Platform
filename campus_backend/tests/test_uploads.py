@@ -159,3 +159,218 @@ class TestMagicSniffingApi:
         avatar_id = res.get_json()["data"]["avatar"]["id"]
         with upload_app.app_context():
             assert db.session.get(Image, avatar_id).mime == "image/jpeg"
+
+
+# ============================================================
+# b2：POST /api/uploads（purpose=product）与孤儿清理
+# ============================================================
+
+UPLOADS_URL = "/api/uploads"
+
+
+def _vuser(user_factory, school_fixtures):
+    from tests.test_products import _verified
+
+    return _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+
+
+def _product_post(client, headers, file_field, purpose="product"):
+    return client.post(
+        UPLOADS_URL, headers=headers, data={**file_field, "purpose": purpose}
+    )
+
+
+class TestUploadsEndpoint:
+    def test_png_200_and_owner_recorded(
+        self, upload_app, db_create_all, school_fixtures, user_factory, make_auth_header
+    ):
+        user = _vuser(user_factory, school_fixtures)
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(user["id"]),
+            {"file": (io.BytesIO(PNG_1PX), "a.png", "image/png")},
+        )
+        assert res.status_code == 200
+        data = res.get_json()["data"]
+        assert set(data) == {"id", "url"}  # ImageRef 形态
+        assert data["url"] == f"/api/images/{data['id']}"
+        with upload_app.app_context():
+            image = db.session.get(Image, data["id"])
+            assert image.purpose == "product"
+            assert image.owner_id == user["id"]  # owner 归属
+            assert image.path.startswith("product/")
+
+    def test_webp_200(
+        self, upload_app, db_create_all, school_fixtures, user_factory, make_auth_header
+    ):
+        user = _vuser(user_factory, school_fixtures)
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(user["id"]),
+            {"file": (io.BytesIO(_webp_bytes()), "a.webp", "image/webp")},
+        )
+        assert res.status_code == 200
+
+    def test_txt_disguised_9001_magic(
+        self, upload_app, db_create_all, school_fixtures, user_factory, make_auth_header
+    ):
+        """txt 伪装 .png → 9001（五件套之魔数嗅探，product 链路复验）。"""
+        user = _vuser(user_factory, school_fixtures)
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(user["id"]),
+            {"file": (io.BytesIO(b"plain text"), "f.png", "image/png")},
+        )
+        _assert_9001_file(res, res.get_json())
+
+    def test_oversize_9001(
+        self, upload_app, db_create_all, school_fixtures, user_factory, make_auth_header
+    ):
+        """超 5MB → 9001（MAX_UPLOAD_MB=5）。"""
+        user = _vuser(user_factory, school_fixtures)
+        big = b"\x89PNG\r\n\x1a\n" + b"\x00" * (5 * 1024 * 1024 + 1)
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(user["id"]),
+            {"file": (io.BytesIO(big), "big.png", "image/png")},
+        )
+        _assert_9001_file(res, res.get_json())
+
+    def test_invalid_purpose_9001(
+        self, upload_app, db_create_all, school_fixtures, user_factory, make_auth_header
+    ):
+        user = _vuser(user_factory, school_fixtures)
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(user["id"]),
+            {"file": (io.BytesIO(PNG_1PX), "a.png", "image/png")},
+            purpose="avatar",
+        )
+        body = res.get_json()
+        assert (res.status_code, body["code"]) == (422, 9001)
+        assert "purpose" in body["data"]["fields"]
+
+    def test_unverified_1004(self, upload_app, db_create_all, user_factory, make_auth_header):
+        user = user_factory(auth_status="unverified")
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(user["id"]),
+            {"file": (io.BytesIO(PNG_1PX), "a.png", "image/png")},
+        )
+        assert (res.status_code, res.get_json()["code"]) == (403, 1004)
+
+    def test_admin_9003(self, upload_app, db_create_all, user_factory, make_auth_header):
+        admin = user_factory(role="admin")
+        res = _product_post(
+            upload_app.test_client(),
+            make_auth_header(admin["id"]),
+            {"file": (io.BytesIO(PNG_1PX), "a.png", "image/png")},
+        )
+        body = res.get_json()
+        assert (res.status_code, body["code"]) == (409, 9003)
+        assert "管理员无交易能力" in body["message"]
+
+
+class TestOrphanCleanup:
+    """孤儿清理三分支：无引用超龄删（记录+文件）/ 有引用留 / path 共享只删记录。"""
+
+    def _make_image(self, app, owner_id, path, *, purpose="product", aged_hours=48):
+        from datetime import datetime, timedelta, timezone
+
+        with app.app_context():
+            image = Image(
+                owner_id=owner_id,
+                path=path,
+                mime="image/png",
+                size_bytes=10,
+                sha256=path.replace("/", ""),
+                purpose=purpose,
+            )
+            db.session.add(image)
+            db.session.flush()
+            # 直接改写 created_at（绕过 default）模拟超龄
+            image.created_at = datetime.now(timezone(timedelta(hours=8))) - timedelta(
+                hours=aged_hours
+            )
+            db.session.commit()
+            return image.id
+
+    def _touch_file(self, app, path):
+        from pathlib import Path
+
+        f = Path(app.config["UPLOAD_DIR"]) / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"fake")
+        return f
+
+    def test_cleanup_removes_aged_unreferenced(self, upload_app, db_create_all, user_factory):
+        """无引用 + 超龄 → 记录与文件皆删。"""
+        from src.services import upload_service
+
+        user = user_factory()
+        image_id = self._make_image(upload_app, user["id"], "product/2026-09/a.png")
+        file = self._touch_file(upload_app, "product/2026-09/a.png")
+        with upload_app.app_context():
+            cleaned = upload_service.cleanup_orphan_product_images()
+        assert cleaned == 1
+        assert file.exists() is False
+        with upload_app.app_context():
+            assert db.session.get(Image, image_id) is None
+
+    def test_cleanup_keeps_referenced(self, upload_app, db_create_all, school_fixtures,
+                                      user_factory, category_fixtures, product_factory):
+        """有 product_images 引用（即便超龄）→ 保留。"""
+        from src.services import upload_service
+
+        seller = school_fixtures  # noqa: F841 - 仅取 fixture 依赖顺序
+        from tests.test_products import _verified
+
+        user = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(user, category_fixtures.items[0].id)
+        image_id = product.product_images[0].image_id
+        with upload_app.app_context():
+            image = db.session.get(Image, image_id)
+            from datetime import datetime, timedelta, timezone
+
+            image.created_at = datetime.now(timezone(timedelta(hours=8))) - timedelta(hours=48)
+            db.session.commit()
+            cleaned = upload_service.cleanup_orphan_product_images()
+        assert cleaned == 0
+        with upload_app.app_context():
+            assert db.session.get(Image, image_id) is not None
+
+    def test_cleanup_keeps_fresh(self, upload_app, db_create_all, user_factory):
+        """未超龄（默认 24h）→ 保留。"""
+        from src.services import upload_service
+
+        user = user_factory()
+        image_id = self._make_image(
+            upload_app, user["id"], "product/2026-10/fresh.png", aged_hours=1
+        )
+        with upload_app.app_context():
+            cleaned = upload_service.cleanup_orphan_product_images()
+        assert cleaned == 0
+        with upload_app.app_context():
+            assert db.session.get(Image, image_id) is not None
+
+    def test_cleanup_shared_path_deletes_record_only(
+        self, upload_app, db_create_all, user_factory
+    ):
+        """path 共享（哈希改名内容去重）：孤儿记录删除，文件因被其他记录
+        引用而保留。"""
+        from src.services import upload_service
+
+        user = user_factory()
+        shared_path = "product/2026-09/shared.png"
+        file = self._touch_file(upload_app, shared_path)
+        orphan_id = self._make_image(upload_app, user["id"], shared_path)
+        other_id = self._make_image(
+            upload_app, user["id"], shared_path, aged_hours=1
+        )  # 同 path 但未超龄 → 保留
+        with upload_app.app_context():
+            cleaned = upload_service.cleanup_orphan_product_images()
+        assert cleaned == 1
+        assert file.exists() is True  # 文件保留（仍被 other 记录引用）
+        with upload_app.app_context():
+            assert db.session.get(Image, orphan_id) is None
+            assert db.session.get(Image, other_id) is not None

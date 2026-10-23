@@ -1,4 +1,4 @@
-"""数据库实例与 ORM 模型集中定义（批次 1：用户域五模型）。
+"""数据库实例与 ORM 模型集中定义（b1 用户域五模型 + b2 商品域四模型）。
 
 分层规则：本文件是依赖链最底层，禁止 import 本项目任何其他模块；
 模型方法仅放单行数据行为（序列化 ``to_dict`` / 纯计算 ``display_name_recalc``），
@@ -44,6 +44,20 @@ def prefix(name: str) -> str:
 # worktree ``b1be-`` → ``b1be-fk_users_avatar_image``。
 FK_USERS_AVATAR_IMAGE = prefix("fk_users_avatar_image")
 
+# ---- b2 商品域 FK 约束名（模型与迁移建/删两处统一引用，单一来源）----
+# MySQL 8.0+ 外键约束名 schema 内唯一（重复报错 1826），与同库并存的
+# 主仓/其他 worktree 不撞名必须随前缀参数化；普通/唯一索引名仅表内唯一，
+# 保持裸名（backend/00「迁移纪律」）。
+FK_PRODUCTS_SELLER = prefix("fk_products_seller")            # products.seller_id → users
+FK_PRODUCTS_SCHOOL = prefix("fk_products_school")            # products.school_id → schools
+FK_PRODUCTS_CAMPUS = prefix("fk_products_campus")        # products.campus_id → campuses
+FK_PRODUCTS_CATEGORY = prefix("fk_products_category")    # products.category_id → categories
+# product_images.product_id → products / product_images.image_id → images
+FK_PRODUCT_IMAGES_PRODUCT = prefix("fk_product_images_product")
+FK_PRODUCT_IMAGES_IMAGE = prefix("fk_product_images_image")
+FK_FAVORITES_USER = prefix("fk_favorites_user")          # favorites.user_id → users
+FK_FAVORITES_PRODUCT = prefix("fk_favorites_product")    # favorites.product_id → products
+
 
 def _cst_now() -> datetime:
     """建行列默认值：当前东八区时间。"""
@@ -62,6 +76,21 @@ def _iso8(value: datetime | None) -> str | None:
         value = value.replace(tzinfo=_CST)
     # 契约示例为秒级精度，序列化统一去掉微秒
     return value.astimezone(_CST).replace(microsecond=0).isoformat()
+
+
+def iso8(value: datetime | None) -> str | None:
+    """``_iso8`` 的公开别名：b2 起 services 组装响应（如 ``favorited_at``）
+    需要同一套「naive 视为东八区 + 秒级精度」归一逻辑，公开复用而非各自实现。
+    """
+    return _iso8(value)
+
+
+def _money(value) -> float | None:
+    """金额 Decimal → 契约 number（两位小数语义由 DECIMAL(10,2) 列保证）。
+
+    仅作序列化输出；业务比较/计算一律在 Decimal 域完成，禁 float 直比。
+    """
+    return None if value is None else float(value)
 
 
 class School(db.Model):
@@ -282,3 +311,202 @@ class AuthApplication(db.Model):
             "reviewed_at": _iso8(self.reviewed_at),
             "created_at": _iso8(self.created_at),
         }
+
+
+# ============================================================
+# b2 商品域四模型（Category / Product / ProductImage / Favorite）
+# ============================================================
+
+
+class Category(db.Model):
+    """商品分类（全局单级，维护入口属批次 5 管理域；本批仅读侧）。"""
+
+    __tablename__ = prefix("categories")
+    __table_args__ = (db.UniqueConstraint("name", name="uk_name"),)
+
+    id = db.Column(_PK, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(64), nullable=False)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    # enabled / disabled
+    status = db.Column(db.String(16), nullable=False, default="enabled")
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_cst_now)
+
+    def ref_dict(self) -> dict:
+        """契约 CategoryRef 概要形态。"""
+        return {"id": self.id, "name": self.name}
+
+
+# 成色 5 档（契约 ProductCondition，2026-10-21 用户确认定稿，双端不得私改）
+PRODUCT_CONDITIONS = ("brand_new", "as_new", "excellent", "good", "fair")
+# 商品状态机（契约 ProductStatus；trading/sold 流入边属 b3，forced_off 写入属 b5）
+PRODUCT_STATUSES = ("on_sale", "trading", "sold", "off_sale", "deleted")
+# 敏感词复核状态（契约 ModerationStatus；词库与匹配属 b5，本批恒 normal）
+MODERATION_STATUSES = ("normal", "pending_review", "handled")
+
+
+class Product(db.Model):
+    """商品。``school_id`` 为冗余隔离列（写入时落，读取侧 scoped_query 单列过滤）。
+
+    ``forced_off`` 为管理员强下标记（b5 写入）：卖家重新上架时 service 据此
+    拒绝（3002）。价格全链路 Decimal（DECIMAL(10,2)），模型 CHECK 仅兜底，
+    业务校验在 service（模型层不抛业务码）。
+    """
+
+    __tablename__ = prefix("products")
+    __table_args__ = (
+        db.Index("idx_school_status_created", "school_id", "status", "created_at"),
+        db.Index("idx_seller_status", "seller_id", "status"),
+        db.Index("idx_category", "category_id"),
+        db.CheckConstraint("price >= 0.01 AND price <= 99999.99"),
+        db.CheckConstraint(
+            "original_price IS NULL OR (original_price >= 0.01 AND original_price <= 99999.99)"
+        ),
+    )
+
+    id = db.Column(_PK, primary_key=True, autoincrement=True)
+    seller_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("users.id"), name=FK_PRODUCTS_SELLER),
+        nullable=False,
+    )
+    school_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("schools.id"), name=FK_PRODUCTS_SCHOOL),
+        nullable=False,
+    )
+    campus_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("campuses.id"), name=FK_PRODUCTS_CAMPUS),
+        nullable=True,
+    )
+    category_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("categories.id"), name=FK_PRODUCTS_CATEGORY),
+        nullable=False,
+    )
+    title = db.Column(db.String(50), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    price = db.Column(db.Numeric(10, 2), nullable=False)
+    original_price = db.Column(db.Numeric(10, 2), nullable=True)
+    condition = db.Column(db.String(16), nullable=False)
+    status = db.Column(db.String(16), nullable=False, default="on_sale")
+    moderation_status = db.Column(db.String(16), nullable=False, default="normal")
+    forced_off = db.Column(db.Boolean, nullable=False, default=False)
+    view_count = db.Column(db.Integer, nullable=False, default=0)
+    favorite_count = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_cst_now)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=_cst_now, onupdate=_cst_now
+    )
+    # 成交时间（b3 订单完成时写入）
+    sold_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    seller = db.relationship("User", foreign_keys=[seller_id])
+    category = db.relationship("Category", foreign_keys=[category_id])
+    campus = db.relationship("Campus", foreign_keys=[campus_id])
+    # 图集关联（数组序=展示排序）；重写图集经 reassign 交给 delete-orphan
+    product_images = db.relationship(
+        "ProductImage",
+        order_by="ProductImage.sort_order",
+        cascade="all, delete-orphan",
+        back_populates="product",
+    )
+
+    def _seller_summary_dict(self) -> dict:
+        """契约 UserSummary 形态（卖家卡片；b3 前信誉分恒 null）。"""
+        seller = self.seller
+        return {
+            "id": seller.id,
+            "display_name": seller.display_name,
+            "nickname": seller.nickname,
+            "avatar": seller.avatar.ref_dict() if seller.avatar is not None else None,
+            "credit_score": (
+                float(seller.credit_score) if seller.credit_score is not None else None
+            ),
+            "auth_status": seller.auth_status,
+            "role": seller.role,
+        }
+
+    def to_summary_dict(self) -> dict:
+        """契约 ProductSummary 概要形态（列表/搜索/推荐/状态变更响应共用）。"""
+        first = self.product_images[0].image if self.product_images else None
+        return {
+            "id": self.id,
+            "title": self.title,
+            "price": _money(self.price),
+            "original_price": _money(self.original_price),
+            "condition": self.condition,
+            "status": self.status,
+            "cover": first.ref_dict() if first is not None else None,
+            "favorite_count": self.favorite_count,
+            "category": self.category.ref_dict() if self.category is not None else None,
+            "seller": self._seller_summary_dict(),
+            "campus": self.campus.ref_dict() if self.campus is not None else None,
+            "created_at": _iso8(self.created_at),
+        }
+
+    def to_detail_dict(self) -> dict:
+        """契约 ProductDetail 的商品本体形态。
+
+        **不含** ``view_count``（每次详情 +1）与 ``is_favorited``（随观看者
+        变化）：两者由 service 组装响应时补齐，缓存亦只落本方法输出
+        （任务卡「缓存商品本体序列化」约定）。
+        """
+        data = self.to_summary_dict()
+        data.update(
+            {
+                "description": self.description,
+                "images": [pi.image.ref_dict() for pi in self.product_images],
+                "updated_at": _iso8(self.updated_at),
+            }
+        )
+        return data
+
+
+class ProductImage(db.Model):
+    """商品-图片关联（数组序=展示排序；孤儿清理经 idx_image 反查引用）。"""
+
+    __tablename__ = prefix("product_images")
+    __table_args__ = (
+        db.UniqueConstraint("product_id", "image_id", name="uk_product_image"),
+        db.Index("idx_image", "image_id"),
+    )
+
+    id = db.Column(_PK, primary_key=True, autoincrement=True)
+    product_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("products.id"), name=FK_PRODUCT_IMAGES_PRODUCT),
+        nullable=False,
+    )
+    image_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("images.id"), name=FK_PRODUCT_IMAGES_IMAGE),
+        nullable=False,
+    )
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    product = db.relationship("Product", back_populates="product_images")
+    image = db.relationship("Image")
+
+
+class Favorite(db.Model):
+    """商品收藏（重复收藏靠 uk_user_product 兜底转 9003；软删商品的收藏保留）。"""
+
+    __tablename__ = prefix("favorites")
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "product_id", name="uk_user_product"),
+        db.Index("idx_user", "user_id"),
+    )
+
+    id = db.Column(_PK, primary_key=True, autoincrement=True)
+    user_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("users.id"), name=FK_FAVORITES_USER),
+        nullable=False,
+    )
+    product_id = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        db.ForeignKey(prefix("products.id"), name=FK_FAVORITES_PRODUCT),
+        nullable=False,
+    )
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_cst_now)

@@ -3,7 +3,18 @@
 from flask import Flask
 
 from src.common.swagger import SWAGGER_URL, create_swagger_ui_blueprint
-from src.routes import auth, certification, images, schools, system, users
+from src.routes import (
+    auth,
+    categories,
+    certification,
+    favorites,
+    images,
+    products,
+    schools,
+    system,
+    uploads,
+    users,
+)
 
 
 def register_routes(app: Flask) -> None:
@@ -14,6 +25,12 @@ def register_routes(app: Flask) -> None:
     app.register_blueprint(certification.bp, url_prefix="/api/certification")
     app.register_blueprint(schools.bp, url_prefix="/api/schools")
     app.register_blueprint(images.bp, url_prefix="/api/images")
+    # b2 商品域（favorites 蓝图挂 /api 前缀：收藏接口路径横跨 /products 与 /favorites）
+    app.register_blueprint(products.bp, url_prefix="/api/products")
+    app.register_blueprint(favorites.bp, url_prefix="/api")
+    app.register_blueprint(categories.bp, url_prefix="/api")
+    app.register_blueprint(uploads.bp, url_prefix="/api")
+    # b2be2: search.py / recommendations.py 注册位于其后
     # Swagger UI 蓝图自带 url_prefix=/api/docs（静态资源路由挂在其下）
     app.register_blueprint(create_swagger_ui_blueprint())
     # flask-swagger-ui 首页路由注册为 /api/docs/（尾斜杠）；契约路径是

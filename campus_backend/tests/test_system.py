@@ -106,8 +106,9 @@ class TestOpenApiEndpoints:
         assert res.status_code == 200
         doc = res.get_json()
         assert doc["openapi"] == "3.0.3"
-        # 契约已冻结为 0.2.0（b1 用户域 12 接口并入）
-        assert doc["info"]["version"] == "0.2.0"
+        # 契约已冻结为 0.3.0（b2 商品域并入；0.2.0 钉死断言随契约更新，
+        # 见 docs/api/CHANGELOG.md 0.3.0 条目）
+        assert doc["info"]["version"] == "0.3.0"
         assert set(doc["paths"]) == {
             "/health",
             "/openapi.json",
@@ -123,6 +124,17 @@ class TestOpenApiEndpoints:
             "/certification/applications/mine",
             "/schools",
             "/images/{id}",
+            # b2 商品域（契约 0.3.0 新增；钉死断言随契约更新）
+            "/products",
+            "/products/mine",
+            "/products/search",
+            "/products/{id}",
+            "/products/{id}/status",
+            "/products/{id}/favorite",
+            "/favorites/mine",
+            "/categories",
+            "/uploads",
+            "/recommendations/home",
         }
         assert res.content_type.startswith("application/json")
 
@@ -146,7 +158,8 @@ class TestErrorEnvelope:
         assert res.status_code == 405
         body = res.get_json()
         assert set(body) == {"code", "message", "data"}
-        assert body["code"] == 9002
+        # 契约 0.3.0：405 业务码由 9002 改为 9007（b2api 冻结；钉死断言随契约更新）
+        assert body["code"] == 9007
 
     def test_unhandled_exception_500_envelope(self, app, client):
         @app.get("/api/__boom")
