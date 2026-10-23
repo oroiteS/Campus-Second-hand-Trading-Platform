@@ -32,7 +32,8 @@ function paginate<T>(items: T[], page: number, pageSize: number): Paginated<T> {
 
 /**
  * POST /api/products/{id}/favorite：收藏（仅本校 on_sale；重复 → 9003；
- * 非 on_sale → 3001；不可见/不存在 → 404/9002 防探测；管理员 → 9003）。
+ * 自家商品 → 9003；非 on_sale → 3001；不可见/不存在 → 404/9002 防探测；
+ * 管理员 → 9003）。
  */
 export function mockFavoriteProduct(id: number): Promise<FavoriteActionData> {
   return delay(300).then(() => {
@@ -47,6 +48,10 @@ export function mockFavoriteProduct(id: number): Promise<FavoriteActionData> {
         `商品当前状态为${PRODUCT_STATUS_TEXT[product.status]}，仅上架商品可收藏`,
         null,
       )
+    }
+    // 与后端校验顺序一致：状态优先（3001），自家商品判断在其后
+    if (product.sellerId === user.id) {
+      throw new ApiError(9003, '不能收藏自己发布的商品', null)
     }
     if (favoritesOfUser(user.id).has(id)) {
       throw new ApiError(9003, '已收藏该商品', null)
