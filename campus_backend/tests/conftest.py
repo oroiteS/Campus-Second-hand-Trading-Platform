@@ -1,7 +1,33 @@
-"""pytest 公共 fixture：应用与测试客户端、内存 Redis 桩、建表与造数工厂。"""
+"""pytest 公共 fixture：应用与测试客户端、内存 Redis 桩、建表与造数工厂。
+
+b2be2 追加三桩（全手写、不引新包；b3/b4 可复用，接口形态如下）：
+
+- ``fake_mongo``：内存 dict 集合桩 ``FakeMongoDatabase``，实现
+  ``find_one(filter)`` / ``update_one(filter, {"$set"|"$inc"}, upsert)``
+  / ``insert_one`` / ``delete_one`` / ``delete_many`` / ``find`` /
+  ``create_index`` 子集，等值过滤语义；经 monkeypatch
+  ``common.mongo_client.get_db`` 注入。置 ``db.fail = True`` 后 get_db
+  抛 ``ConnectionError``（降级演练）。
+- ``fake_chroma``：内存余弦 top-k 桩 ``FakeChromaCollection``，实现
+  ``upsert(ids, embeddings, documents, metadatas)`` / ``query(
+  query_embeddings, n_results, where)`` / ``update(ids, metadata)`` /
+  ``get(ids)`` / ``delete(ids)`` 子集；``where`` 支持
+  ``{"k": v}`` 与 ``{"$and": [...]}``；距离 = 1 − 余弦相似度（与真实
+  Chroma cosine 同构）；经 monkeypatch ``common.chroma_client.
+  get_collection`` / ``delete_collection`` 注入。置 ``stub.fail = True``
+  后 get_collection 抛 ``ConnectionError``。
+- ``fake_embedding``：确定性伪向量 ``fake_embedding(texts) ->
+  list[list[float]]``——按文本首字符 hash 生成 1024 维（EMBEDDING_DIM）
+  单位向量，同文本恒同向量、异文本异向量；monkeypatch
+  ``common.embedding_client`` 的 ``embed_texts`` / ``is_available`` /
+  ``active_model``（模型名固定 ``fake-embedding-model``）。置
+  ``fake_embedding.fail = True`` 后 embed 抛 ``ConnectionError``、
+  is_available 返回 False。
+"""
 
 import base64
 import io
+import math
 from decimal import Decimal
 from itertools import count
 from types import SimpleNamespace
@@ -50,6 +76,7 @@ class FakeRedis:
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
+        self.lists: dict[str, list[str]] = {}
         self.fail = False
 
     def _maybe_fail(self) -> None:
@@ -85,6 +112,24 @@ class FakeRedis:
     def expire(self, key: str, seconds: int) -> bool:
         self._maybe_fail()
         return key in self.store
+
+    # ---- 列表操作（b2be2 向量重试队列 queue:vector:retry）----
+
+    def rpush(self, key: str, value: str) -> int:
+        self._maybe_fail()
+        self.lists.setdefault(key, []).append(str(value))
+        return len(self.lists[key])
+
+    def lpop(self, key: str) -> str | None:
+        self._maybe_fail()
+        items = self.lists.get(key)
+        if not items:
+            return None
+        return items.pop(0)
+
+    def llen(self, key: str) -> int:
+        self._maybe_fail()
+        return len(self.lists.get(key, []))
 
 
 @pytest.fixture(autouse=True)
@@ -323,3 +368,238 @@ def png_upload():
         return {"file": (io.BytesIO(data or PNG_1PX), name, mime)}
 
     return _make
+
+
+# ============================================================
+# b2be2 三桩：fake_mongo / fake_chroma / fake_embedding
+# （接口形态见模块 docstring；b3/b4 可复用）
+# ============================================================
+
+
+class FakeMongoCollection:
+    """内存集合桩：等值过滤 + $set/$inc 更新 + upsert（覆盖 b2be2 所用子集）。"""
+
+    def __init__(self) -> None:
+        self.docs: list[dict] = []
+        self.indexes: list[tuple] = []
+
+    @staticmethod
+    def _match(doc: dict, filter_: dict | None) -> bool:
+        if not filter_:
+            return True
+        return all(doc.get(key) == value for key, value in filter_.items())
+
+    @staticmethod
+    def _apply(doc: dict, update: dict) -> None:
+        unknown = set(update) - {"$set", "$inc"}
+        if unknown:
+            raise NotImplementedError(f"FakeMongoCollection 不支持操作符: {unknown}")
+        for key, value in (update.get("$set") or {}).items():
+            doc[key] = value
+        for key, value in (update.get("$inc") or {}).items():
+            doc[key] = doc.get(key, 0) + value
+
+    def find_one(self, filter_: dict | None = None, *args, **kwargs) -> dict | None:
+        for doc in self.docs:
+            if self._match(doc, filter_):
+                return dict(doc)
+        return None
+
+    def find(self, filter_: dict | None = None) -> list[dict]:
+        return [dict(doc) for doc in self.docs if self._match(doc, filter_)]
+
+    def insert_one(self, doc: dict):
+        self.docs.append(dict(doc))
+        return SimpleNamespace(inserted_id=len(self.docs))
+
+    def update_one(self, filter_: dict, update: dict, upsert: bool = False):
+        for doc in self.docs:
+            if self._match(doc, filter_):
+                self._apply(doc, update)
+                return SimpleNamespace(matched_count=1, upserted_id=None)
+        if upsert:
+            doc = dict(filter_)
+            self._apply(doc, update)
+            self.docs.append(doc)
+            return SimpleNamespace(matched_count=0, upserted_id=len(self.docs))
+        return SimpleNamespace(matched_count=0, upserted_id=None)
+
+    def delete_one(self, filter_: dict):
+        for i, doc in enumerate(self.docs):
+            if self._match(doc, filter_):
+                del self.docs[i]
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
+    def delete_many(self, filter_: dict | None = None):
+        before = len(self.docs)
+        self.docs = [d for d in self.docs if not self._match(d, filter_)]
+        return SimpleNamespace(deleted_count=before - len(self.docs))
+
+    def create_index(self, *keys, **kwargs):
+        """幂等 no-op：仅记录签名供断言。"""
+        self.indexes.append((keys, tuple(sorted(kwargs))))
+        return f"idx_{len(self.indexes)}"
+
+
+class FakeMongoDatabase:
+    """内存库桩：按集合名懒建集合（dict 与属性两种访问形态）。"""
+
+    def __init__(self) -> None:
+        self._collections: dict[str, FakeMongoCollection] = {}
+        self.fail = False
+
+    def __getitem__(self, name: str) -> FakeMongoCollection:
+        return self._collections.setdefault(name, FakeMongoCollection())
+
+    def __getattr__(self, name: str) -> FakeMongoCollection:
+        # 仅在常规属性查找失败时进入（_collections 已在 __init__ 落 __dict__）
+        return self[name]
+
+
+@pytest.fixture()
+def fake_mongo(monkeypatch):
+    """monkeypatch ``common.mongo_client.get_db`` 注入内存库桩。"""
+    from src.common import mongo_client
+
+    stub = FakeMongoDatabase()
+
+    def _get_db():
+        if stub.fail:
+            raise ConnectionError("模拟 Mongo 故障")
+        return stub
+
+    monkeypatch.setattr(mongo_client, "get_db", _get_db)
+    return stub
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _match_where(metadata: dict, where: dict | None) -> bool:
+    """Chroma where 子集：等值与 $and（b2be2 仅用这两种形态）。"""
+    if not where:
+        return True
+    if "$and" in where:
+        return all(_match_where(metadata, cond) for cond in where["$and"])
+    return all(metadata.get(key) == value for key, value in where.items())
+
+
+class FakeChromaCollection:
+    """内存余弦 top-k 桩：距离 = 1 − 余弦相似度（与真实 cosine 空间同构）。"""
+
+    def __init__(self) -> None:
+        self.name = "product_vectors-test"
+        self.metadata = {"hnsw:space": "cosine"}
+        self.vectors: dict[str, list[float]] = {}
+        self.documents: dict[str, str] = {}
+        self.metadatas: dict[str, dict] = {}
+
+    def upsert(self, ids, embeddings, documents=None, metadatas=None):
+        for i, item_id in enumerate(ids):
+            self.vectors[str(item_id)] = list(embeddings[i])
+            if documents is not None:
+                self.documents[str(item_id)] = documents[i]
+            if metadatas is not None:
+                self.metadatas[str(item_id)] = dict(metadatas[i])
+
+    def query(self, query_embeddings, n_results: int = 10, where: dict | None = None):
+        scored: list[tuple[str, float]] = []
+        query = query_embeddings[0]
+        for item_id, vector in self.vectors.items():
+            if _match_where(self.metadatas.get(item_id, {}), where):
+                scored.append((item_id, 1.0 - _cosine(query, vector)))
+        scored.sort(key=lambda pair: pair[1])
+        top = scored[:n_results]
+        return {
+            "ids": [[item_id for item_id, _ in top]],
+            "distances": [[distance for _, distance in top]],
+        }
+
+    def update(self, ids, metadata=None):
+        for item_id in ids:
+            item_id = str(item_id)
+            if item_id in self.metadatas and metadata is not None:
+                self.metadatas[item_id].update(metadata)
+
+    def get(self, ids=None):
+        wanted = [str(i) for i in ids] if ids else list(self.vectors)
+        return {"ids": [i for i in wanted if i in self.vectors]}
+
+    def delete(self, ids=None):
+        for item_id in [str(i) for i in (ids or [])]:
+            self.vectors.pop(item_id, None)
+            self.documents.pop(item_id, None)
+            self.metadatas.pop(item_id, None)
+
+
+@pytest.fixture()
+def fake_chroma(monkeypatch):
+    """monkeypatch ``common.chroma_client.get_collection/delete_collection``。"""
+    from src.common import chroma_client
+
+    stub = FakeChromaCollection()
+    state = {"fail": False}
+
+    def _get_collection():
+        if state["fail"]:
+            raise ConnectionError("模拟 Chroma 故障")
+        return stub
+
+    def _delete_collection():
+        stub.vectors.clear()
+        stub.documents.clear()
+        stub.metadatas.clear()
+
+    monkeypatch.setattr(chroma_client, "get_collection", _get_collection)
+    monkeypatch.setattr(chroma_client, "delete_collection", _delete_collection)
+    stub.fail = state  # 用例经 stub.fail["fail"] = True 演练故障
+    return stub
+
+
+def _pseudo_vector(text: str, dim: int) -> list[float]:
+    """确定性伪向量：首字符 hash 决定相位，正弦叠加后归一化为单位向量。"""
+    seed = ord(text[0]) if text else 0
+    raw = [
+        math.sin(seed * 0.37 + i * 0.11) + 0.05 * ((seed + i) % 5 - 2)
+        for i in range(dim)
+    ]
+    norm = math.sqrt(sum(v * v for v in raw)) or 1.0
+    return [v / norm for v in raw]
+
+
+@pytest.fixture()
+def fake_embedding(monkeypatch):
+    """确定性伪 embedding：同文本恒同向量；记录调用文本供断言。"""
+    from flask import current_app
+
+    from src.common import embedding_client
+
+    def _embed(texts):
+        if _embed.fail:
+            raise ConnectionError("模拟 embedding 故障")
+        _embed.calls.extend(texts)
+        try:
+            dim = current_app.config["EMBEDDING_DIM"]
+        except RuntimeError:  # 无应用上下文（纯函数测试）
+            dim = 1024
+        return [_pseudo_vector(text, dim) for text in texts]
+
+    _embed.calls = []
+    _embed.fail = False
+
+    def _is_available():
+        if _embed.fail:
+            return False, "embedding 不可用（测试桩）"
+        return True, "ok"
+
+    monkeypatch.setattr(embedding_client, "embed_texts", _embed)
+    monkeypatch.setattr(embedding_client, "is_available", _is_available)
+    monkeypatch.setattr(embedding_client, "active_model", lambda: "fake-embedding-model")
+    return _embed
