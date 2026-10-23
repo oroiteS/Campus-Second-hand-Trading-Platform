@@ -146,7 +146,8 @@ class TestErrorEnvelope:
         assert res.status_code == 405
         body = res.get_json()
         assert set(body) == {"code", "message", "data"}
-        assert body["code"] == 9002
+        # 契约 0.3.0：405 业务码由 9002 改为 9007（b2api 冻结；钉死断言随契约更新）
+        assert body["code"] == 9007
 
     def test_unhandled_exception_500_envelope(self, app, client):
         @app.get("/api/__boom")

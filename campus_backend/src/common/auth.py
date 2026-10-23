@@ -10,7 +10,7 @@ from collections.abc import Callable
 from functools import wraps
 from typing import TYPE_CHECKING
 
-from flask import current_app, g
+from flask import current_app, g, request
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 
 from src.common import redis_client
@@ -19,6 +19,11 @@ from src.model import User, db
 
 if TYPE_CHECKING:
     from flask_jwt_extended import JWTManager
+
+# 图片 Cookie 通道令牌名（契约 0.3.0：login Set-Cookie / images 双通道 / logout 清除）
+IMG_COOKIE = "img_token"
+# Cookie 作用域四属性之三（TTL 由调用方按令牌有效期传入 max_age）
+IMG_COOKIE_PATH = "/api/images"
 
 
 def scoped_key(namespace: str, *parts: object) -> str:
@@ -82,6 +87,31 @@ def admin_required(view: Callable) -> Callable:
         user = _load_current_user()
         if user.role != "admin":
             raise ApiError(ErrorCode.ADMIN_REQUIRED)
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def login_required_img(view: Callable) -> Callable:
+    """图片路由专用：``Authorization: Bearer`` 头优先，缺失时回退 IMG_COOKIE。
+
+    随后与 ``login_required`` 走**同一** JWT 校验（过期/无效/注销分别
+    1002/1001/1003）与 ``g.current_user`` 注入路径。回退实现：把 Cookie
+    值装回 ``request.environ`` 的 Authorization 头位，flask-jwt-extended
+    照常从头解析——两条通道共用全部校验逻辑，无第二套实现。
+
+    **仅 images 路由使用**（``<img>`` 标签无法携带 Bearer 头）；其余接口
+    一律 Bearer，不接受 Cookie 认证（CSRF 面不扩大）。
+    """
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if request.headers.get("Authorization") is None:
+            cookie_token = request.cookies.get(IMG_COOKIE)
+            if cookie_token:
+                request.environ["HTTP_AUTHORIZATION"] = f"Bearer {cookie_token}"
+        verify_jwt_in_request()
+        _load_current_user()
         return view(*args, **kwargs)
 
     return wrapper

@@ -10,7 +10,7 @@ from flask import Blueprint, request
 from flask_jwt_extended import get_jwt
 
 from src.common import responses
-from src.common.auth import login_required
+from src.common.auth import IMG_COOKIE, IMG_COOKIE_PATH, login_required
 from src.common.errors import ApiError, ErrorCode
 from src.services import auth_service
 
@@ -51,7 +51,7 @@ def login():
     # 测试客户端与直连场景 remote_addr 均可用；反代部署时由前置写入
     client_ip = request.remote_addr or "unknown"
     user, token, expires_in = auth_service.login(account, password, client_ip)
-    return responses.success(
+    body, _status = responses.success(
         {
             "access_token": token,
             "token_type": "Bearer",
@@ -59,6 +59,17 @@ def login():
             "user": user.to_profile_dict(),
         }
     )
+    # 图片 Cookie 通道（契约 0.3.0）：值为同一 JWT，TTL 同令牌；
+    # httpOnly + SameSite=Lax + Path=/api/images 四属性齐全
+    body.set_cookie(
+        IMG_COOKIE,
+        token,
+        max_age=expires_in,
+        httponly=True,
+        samesite="Lax",
+        path=IMG_COOKIE_PATH,
+    )
+    return body
 
 
 @bp.post("/logout")
@@ -67,7 +78,12 @@ def logout():
     """POST /api/auth/logout —— 需登录；jti 入黑名单，Redis 故障降级可见。"""
     claims = get_jwt()
     remaining_seconds = int(claims["exp"] - time.time())
-    return responses.success(auth_service.logout(claims["jti"], remaining_seconds))
+    body, _status = responses.success(
+        auth_service.logout(claims["jti"], remaining_seconds)
+    )
+    # 登出清除图片 Cookie（与 login 种下的同 path）
+    body.delete_cookie(IMG_COOKIE, path=IMG_COOKIE_PATH)
+    return body
 
 
 @bp.post("/password/reset")

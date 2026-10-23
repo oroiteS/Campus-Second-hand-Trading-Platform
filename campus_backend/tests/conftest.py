@@ -88,9 +88,13 @@ class FakeRedis:
 
 @pytest.fixture(autouse=True)
 def fake_redis(monkeypatch):
-    """全用例隔离真实 Redis：get_redis 一律返回内存桩（防误连本机实例）。"""
+    """全用例隔离真实 Redis：get_redis 一律返回内存桩（防误连本机实例）。
+
+    多库版 ``get_redis(db_offset)`` 按 offset 返回**同一**内存桩——测试
+    用键名区分（product:* / auth:* / rate:*），键空间不隔离即可。
+    """
     stub = FakeRedis()
-    monkeypatch.setattr(redis_client, "get_redis", lambda: stub)
+    monkeypatch.setattr(redis_client, "get_redis", lambda db_offset=3: stub)
     return stub
 
 
