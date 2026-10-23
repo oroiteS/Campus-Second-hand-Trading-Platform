@@ -122,7 +122,7 @@ function ProductDetail({ productId }: { productId: number }) {
           prev ? { ...prev, is_favorited: prevFavorited, favorite_count: prevCount } : prev,
         )
         if (err instanceof ApiError && err.code === 9003) {
-          setFavoriteNotice('操作未生效：已收藏该商品，请刷新查看最新状态')
+          setFavoriteNotice('操作未生效：已收藏该商品，或不能收藏自己发布的商品')
         } else if (!isTokenInvalidError(err)) {
           setFavoriteNotice(errorMessage(err, '收藏操作失败，请稍后重试'))
         }
@@ -196,7 +196,9 @@ function ProductDetail({ productId }: { productId: number }) {
   const isOwner =
     detail?.seller != null && currentUser != null && detail.seller.id === currentUser.id
   const canManage = isOwner && (detail?.status === 'on_sale' || detail?.status === 'off_sale')
-  const showFavorite = currentUser != null && currentUser.role !== 'admin'
+  // 本人商品不渲染收藏按钮（后端 9003 拒收自家商品，UI 层直接隐藏入口）
+  const showFavorite =
+    currentUser != null && currentUser.role !== 'admin' && !isOwner
 
   return (
     <div className="page-container">
