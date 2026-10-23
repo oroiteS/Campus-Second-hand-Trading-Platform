@@ -32,7 +32,7 @@ def _scoped_product_or_404(user, product_id: int) -> Product:
 
 
 def favorite(user, product_id: int) -> dict:
-    """收藏：仅本校 on_sale；重复 → 9003（uk 兜底）；emit FAVORITE_CHANGED。"""
+    """收藏：仅本校 on_sale、非自家商品；重复 → 9003（uk 兜底）；emit FAVORITE_CHANGED。"""
     if user.role == "admin":
         raise _admin_rejected("收藏商品")
     product = _scoped_product_or_404(user, product_id)
@@ -43,6 +43,9 @@ def favorite(user, product_id: int) -> dict:
                 f"商品当前状态为{_STATUS_LABELS[product.status]}，仅上架商品可收藏"
             ),
         )
+    if product.seller_id == user.id:
+        # 状态优先：自家商品但非 on_sale 仍先命中上面的 3001
+        raise ApiError(ErrorCode.CONFLICT, message="不能收藏自己发布的商品")
     db.session.add(Favorite(user_id=user.id, product_id=product.id))
     # SQL 原子自增（读改写会丢并发更新）；updated_at 显式保持。
     # 注意：execute 会先 autoflush 上面的 INSERT，故 try 须覆盖整段变更。

@@ -95,6 +95,35 @@ class TestFavorite:
         res = client.post(FAVORITE_URL.format(pid=424242), headers=make_auth_header(buyer["id"]))
         assert (res.status_code, res.get_json()["code"]) == (404, 9002)
 
+    def test_favorite_own_product_9003(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """不能收藏自己发布的商品 → 409/9003（他人 on_sale 仍 200 由
+        test_favorite_success 回归保障）。"""
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        res = client.post(
+            FAVORITE_URL.format(pid=product.id), headers=make_auth_header(seller["id"])
+        )
+        assert (res.status_code, res.get_json()["code"]) == (409, 9003)
+        assert res.get_json()["message"] == "不能收藏自己发布的商品"
+        assert db.session.query(Favorite).filter_by(user_id=seller["id"]).count() == 0
+
+    def test_favorite_own_non_on_sale_status_first_3001(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """校验顺序：状态优先——自家商品但非 on_sale 仍先命中 3001。"""
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(
+            seller, category_fixtures.items[0].id, status="off_sale"
+        )
+        res = client.post(
+            FAVORITE_URL.format(pid=product.id), headers=make_auth_header(seller["id"])
+        )
+        assert (res.status_code, res.get_json()["code"]) == (409, 3001)
+
     def test_favorite_admin_9003(
         self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
         product_factory, make_auth_header,
