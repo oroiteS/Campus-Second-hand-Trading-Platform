@@ -1,6 +1,7 @@
 import type {
   LoginData,
   LoginInput,
+  LogoutData,
   PasswordResetInput,
   RegisterInput,
   UserProfile,
@@ -25,12 +26,12 @@ export function login(body: LoginInput): Promise<LoginData> {
   return http.post<LoginData>('/auth/login', body).then((res) => res.data)
 }
 
-/** POST /api/auth/logout：登出（需登录；令牌 jti 入 Redis 黑名单） */
-export function logout(): Promise<void> {
+/** POST /api/auth/logout：登出（需登录；令牌 jti 入 Redis 黑名单；降级时 data 附 degraded 字段） */
+export function logout(): Promise<LogoutData> {
   if (USE_MOCK) {
     return mockLogout()
   }
-  return http.post<void>('/auth/logout').then(() => undefined)
+  return http.post<LogoutData>('/auth/logout').then((res) => res.data)
 }
 
 /** POST /api/auth/password/reset：重置密码（公开；2004 不泄露用户名存在性） */

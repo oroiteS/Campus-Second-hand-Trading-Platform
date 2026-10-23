@@ -58,6 +58,12 @@ export type SearchResultData = Paginated<ProductSummary> & DegradedFields
 /** GET /favorites/mine 条目：ProductSummary & { favorited_at } */
 export type FavoriteItem = ProductSummary & { favorited_at: string }
 
+/**
+ * POST /auth/logout 数据体：正常为空对象；Redis 故障降级时附
+ * degraded: true 与 degraded_reason（黑名单未落，令牌有效至自然过期）。
+ */
+export type LogoutData = DegradedFields
+
 // ---- 业务枚举 ----
 export type Role = components['schemas']['Role']
 export type AuthStatus = components['schemas']['AuthStatus']

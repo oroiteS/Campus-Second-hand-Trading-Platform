@@ -1,6 +1,7 @@
 import type {
   LoginData,
   LoginInput,
+  LogoutData,
   PasswordResetInput,
   RegisterInput,
   UserProfile,
@@ -226,10 +227,15 @@ export function mockRegister(body: RegisterInput): Promise<UserProfile> {
   })
 }
 
-/** POST /api/auth/logout：登出同时清除 mock 内存会话（与 authStore 清令牌一致） */
-export function mockLogout(): Promise<void> {
+/**
+ * POST /api/auth/logout：登出同时清除 mock 内存会话（与 authStore 清令牌一致）。
+ * mock 走契约正常路径（data = {}）；Redis 故障降级（degraded/degraded_reason）
+ * 由真实后端触发，消费端（ProfilePage）已按契约字段做用户可见提示。
+ */
+export function mockLogout(): Promise<LogoutData> {
   return delay(200).then(() => {
     mockClearSession()
+    return {}
   })
 }
 

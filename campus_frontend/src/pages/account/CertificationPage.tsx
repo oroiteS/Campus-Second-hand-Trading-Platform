@@ -420,11 +420,22 @@ function CertificationForm({
             value={studentNo}
             readOnly
             aria-readonly="true"
-            aria-describedby="cert-student-no-hint"
+            aria-invalid={errors.student_no ? true : undefined}
+            aria-describedby={
+              errors.student_no ? 'cert-student-no-error' : 'cert-student-no-hint'
+            }
+            status={errors.student_no ? 'error' : undefined}
           />
-          <p id="cert-student-no-hint" className="form-field__hint">
-            预填注册学号且不可修改，防止代他人认证
-          </p>
+          {errors.student_no ? (
+            /* b1 审查建议⑤：后端对该只读字段返 9001 时也内联展示（防御性渲染位） */
+            <p id="cert-student-no-error" className="form-field__error" role="alert">
+              {errors.student_no}
+            </p>
+          ) : (
+            <p id="cert-student-no-hint" className="form-field__hint">
+              预填注册学号且不可修改，防止代他人认证
+            </p>
+          )}
         </div>
 
         <div className="form-field">
