@@ -205,14 +205,15 @@ function PublishForm({ editId }: PublishFormProps) {
     const next = validateForm()
     setErrors(next)
     if (Object.keys(next).length > 0) return
+    if (categoryId == null || condition == null) return // 预检已覆盖，此处仅为类型收窄
 
     const body: ProductCreateInput = {
       title: title.trim(),
       description,
       price: Number(price),
       original_price: originalPrice.trim() === '' ? null : Number(originalPrice),
-      category_id: categoryId as number,
-      condition: condition as ProductCondition,
+      category_id: categoryId,
+      condition,
       campus_id: campusId,
       image_ids: images.map((image) => image.id),
     }

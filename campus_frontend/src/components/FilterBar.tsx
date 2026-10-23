@@ -149,7 +149,12 @@ export function FilterBar({
             id={`${idPrefix}-sort`}
             options={SORT_OPTIONS}
             value={sort}
-            onChange={(value) => onSortChange(value as SortValue)}
+            onChange={(value) => {
+              const next = SORT_OPTIONS.find((option) => option.value === value)
+              if (next) {
+                onSortChange(next.value)
+              }
+            }}
             aria-labelledby={`${idPrefix}-sort-label`}
           />
         </div>
