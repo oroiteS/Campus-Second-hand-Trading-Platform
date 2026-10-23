@@ -1,0 +1,222 @@
+/* 商品域页面共用样式（列表 / 搜索 / 详情 / 发布编辑 / 我的商品 / 收藏） */
+
+.product-list__meta {
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.product-list__blocked {
+  margin: 0;
+}
+
+.product-list__pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-5);
+}
+
+/* ---- 详情页 ---- */
+
+.product-detail {
+  display: grid;
+  gap: var(--space-5);
+}
+
+@media (min-width: 1024px) {
+  .product-detail {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    align-items: start;
+  }
+}
+
+.product-detail__gallery {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.product-detail__gallery .ant-carousel .slick-slide img {
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--cover-ratio);
+  object-fit: cover;
+}
+
+.product-detail__gallery-count {
+  margin: var(--space-2) 0 0;
+  text-align: end;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.product-detail__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.product-detail__title {
+  margin: 0;
+}
+
+.product-detail__price-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.product-detail__price {
+  color: var(--color-price);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+}
+
+.product-detail__price-origin {
+  color: var(--color-text-disabled);
+  font-size: var(--text-base);
+}
+
+.product-detail__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.product-detail__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.product-detail__facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.product-detail__facts dt {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.product-detail__facts dd {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.product-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.product-detail__actions .ant-btn {
+  min-height: var(--touch-target);
+}
+
+.product-detail__seller {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background-color: var(--color-surface-variant);
+  border-radius: var(--radius-md);
+}
+
+.product-detail__seller-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.product-detail__seller-name {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.product-detail__seller-sub {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.product-detail__seller-avatar {
+  flex: 0 0 auto;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-full);
+  object-fit: cover;
+}
+
+.product-detail__seller-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-full);
+  color: var(--color-on-primary);
+  background-color: var(--color-primary);
+}
+
+.product-detail__section {
+  grid-column: 1 / -1;
+  padding: var(--space-4);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.product-detail__section h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-lg);
+}
+
+.product-detail__description {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: var(--color-text);
+}
+
+.product-detail__owner-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px dashed var(--color-primary);
+  border-radius: var(--radius-md);
+}
+
+/* ---- 发布 / 编辑 ---- */
+
+.publish-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 40rem;
+}
+
+/* ---- 我的商品 / 收藏 ---- */
+
+.my-products__tabs {
+  margin-bottom: var(--space-4);
+}
+
+.my-favorites__hint {
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}

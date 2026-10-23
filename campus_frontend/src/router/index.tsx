@@ -9,6 +9,7 @@ import {
   HomePage,
   LoginPage,
   NotFoundPage,
+  ProductListPage,
   ProfilePage,
   RegisterPage,
 } from './lazyPages'
@@ -28,7 +29,10 @@ export const router = createBrowserRouter([
     children: [
       {
         element: <RequireVerified />,
-        children: [{ index: true, element: <HomePage /> }],
+        children: [
+          { index: true, element: <HomePage /> },
+          { path: 'products', element: <ProductListPage /> },
+        ],
       },
       {
         element: <GuestOnly />,
