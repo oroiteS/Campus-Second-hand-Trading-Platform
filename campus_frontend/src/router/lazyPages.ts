@@ -23,6 +23,24 @@ export const ProfilePage = lazy(() =>
 export const AdminDashboardPage = lazy(() =>
   import('../pages/admin/AdminDashboardPage').then((m) => ({ default: m.AdminDashboardPage })),
 )
+export const ProductListPage = lazy(() =>
+  import('../pages/product/ProductListPage').then((m) => ({ default: m.ProductListPage })),
+)
+export const ProductDetailPage = lazy(() =>
+  import('../pages/product/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })),
+)
+export const ProductPublishPage = lazy(() =>
+  import('../pages/product/ProductPublishPage').then((m) => ({ default: m.ProductPublishPage })),
+)
+export const MyProductsPage = lazy(() =>
+  import('../pages/product/MyProductsPage').then((m) => ({ default: m.MyProductsPage })),
+)
+export const MyFavoritesPage = lazy(() =>
+  import('../pages/product/MyFavoritesPage').then((m) => ({ default: m.MyFavoritesPage })),
+)
+export const SearchPage = lazy(() =>
+  import('../pages/product/SearchPage').then((m) => ({ default: m.SearchPage })),
+)
 export const NotFoundPage = lazy(() =>
   import('../pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
 )

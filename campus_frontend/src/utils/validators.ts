@@ -1,8 +1,8 @@
 /**
- * 表单字段预检唯一口径（docs/plan/01-用户域.md「3.0 字段校验对照表」）。
+ * 表单字段预检唯一口径（docs/plan/01-用户域.md 与 docs/plan/02-商品域.md「3.0 字段校验对照表」）。
  *
- * - 全部表单（登录 / 注册 / 找回密码 / 资料编辑 / 改密 / 认证提交）的客户端
- *   预检一律引用本文件，不得在各页面另写规则；
+ * - 全部表单（登录 / 注册 / 找回密码 / 资料编辑 / 改密 / 认证提交 / 商品发布编辑 / 列表筛选）
+ *   的客户端预检一律引用本文件，不得在各页面另写规则；
  * - api/mock 复用同一批函数模拟后端 9001 复验，保证「双端同源」演示口径一致；
  * - 预检仅提升体验，不替代后端复验；后端校验失败统一 422 / 9001（data.fields），
  *   页面须将 fields 逐字段内联展示。
@@ -128,6 +128,112 @@ export function validateUploadFile(file: File, label: string): string | null {
   }
   if (file.size > UPLOAD_MAX_MB * 1024 * 1024) {
     return `${label}大小不得超过 ${UPLOAD_MAX_MB} MB`
+  }
+  return null
+}
+
+// ---- 商品域（b2 · docs/plan/02-商品域.md「3.0 字段校验对照表」） ----
+// 三张商品表单（发布 / 编辑 / 筛选）共用本节，不得各写各的；
+// api/mock 复用同批函数模拟后端 9001 复验（双端同源）。
+
+/** 商品价格：`^\d{1,5}(\.\d{1,2})?$` 且数值 0.01–99999.99（original_price 同则可空） */
+export const PRICE_PATTERN = /^\d{1,5}(\.\d{1,2})?$/
+
+export const PRICE_MIN = 0.01
+
+export const PRICE_MAX = 99999.99
+
+/** 价格（必填）：0.01–99999.99 元，最多两位小数 */
+export function validatePrice(value: string, label = '价格'): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return `请输入${label}`
+  }
+  if (!PRICE_PATTERN.test(trimmed)) {
+    return `${label}须为最多两位小数的数字`
+  }
+  const num = Number(trimmed)
+  if (num < PRICE_MIN || num > PRICE_MAX) {
+    return `${label}须在 ${PRICE_MIN}–${PRICE_MAX} 元之间`
+  }
+  return null
+}
+
+/** 原价（可空）：填写时约束同 price */
+export function validatePriceOptional(value: string, label = '原价'): string | null {
+  if (value.trim() === '') {
+    return null
+  }
+  return validatePrice(value, label)
+}
+
+/** 筛选价格边界（可空）：填写时须为不超过两位小数的非负数（0 允许作边界） */
+export function validatePriceFilter(value: string, label: string): string | null {
+  const trimmed = value.trim()
+  if (trimmed === '') {
+    return null
+  }
+  if (!PRICE_PATTERN.test(trimmed)) {
+    return `${label}须为不超过两位小数的非负数字`
+  }
+  return null
+}
+
+/** 价格区间：min ≤ max（格式错误由 validatePriceFilter 字段级负责，此处只判次序） */
+export function validatePriceRange(min: string, max: string): string | null {
+  if (min.trim() === '' || max.trim() === '') {
+    return null
+  }
+  if (!PRICE_PATTERN.test(min.trim()) || !PRICE_PATTERN.test(max.trim())) {
+    return null
+  }
+  if (Number(min) > Number(max)) {
+    return '价格下界不得大于价格上界'
+  }
+  return null
+}
+
+/** 商品标题：1–50 字符 */
+export function validateTitle(value: string): string | null {
+  if (!value.trim()) {
+    return '请输入标题'
+  }
+  if (value.length > 50) {
+    return '标题长度不得超过 50 个字符'
+  }
+  return null
+}
+
+/** 商品描述：1–2000 字符 */
+export function validateDescription(value: string): string | null {
+  if (!value.trim()) {
+    return '请输入描述'
+  }
+  if (value.length > 2000) {
+    return '描述长度不得超过 2000 个字符'
+  }
+  return null
+}
+
+/** 搜索词：1–100 字符（空白视为未填写） */
+export function validateSearchQ(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return '请输入搜索词'
+  }
+  if (trimmed.length > 100) {
+    return '搜索词长度不得超过 100 个字符'
+  }
+  return null
+}
+
+/** 列表关键词（可空）：0–100 字符，LIKE 标题匹配（契约 GET /api/products keyword） */
+export function validateKeywordOptional(value: string): string | null {
+  if (value.trim() === '') {
+    return null
+  }
+  if (value.length > 100) {
+    return '关键词长度不得超过 100 个字符'
   }
   return null
 }

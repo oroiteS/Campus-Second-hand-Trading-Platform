@@ -1,4 +1,4 @@
-import { Alert, Button, Input, Modal, Tag } from 'antd'
+import { Alert, Button, Input, message, Modal, Tag } from 'antd'
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { logout } from '../../api/auth'
@@ -411,7 +411,14 @@ function ProfilePanels({ profile, onProfileSync, onReload, onClearAuth, onNaviga
     setLoggingOut(true)
     try {
       // 令牌类失败已由 http 层清令牌并引导；其余失败也保证本地登出
-      await logout()
+      const result = await logout()
+      // 契约消费纪律（b1 审查建议⑥）：logout 降级字段不得静默吞掉——
+      // Redis 故障时黑名单未落、令牌有效至自然过期，给用户可见提示
+      if (result.degraded) {
+        message.warning(
+          result.degraded_reason ?? '登出服务暂时不可用，令牌将在过期后自动失效',
+        )
+      }
     } catch {
       // 登出接口异常不阻塞本地退出
     }

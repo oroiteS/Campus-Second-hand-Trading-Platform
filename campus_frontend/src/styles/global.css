@@ -170,3 +170,10 @@ ol {
   color: var(--color-error);
   font-size: var(--text-sm);
 }
+
+/* ---- 成功提示（与 form-field__error 同构的语义变体，如上下架成功回执） ---- */
+.form-field__success {
+  margin: 0;
+  color: var(--color-success);
+  font-size: var(--text-sm);
+}
