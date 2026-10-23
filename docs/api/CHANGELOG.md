@@ -27,6 +27,7 @@ _记录 `docs/api/` 下全部契约变更（[openapi.yaml](openapi.yaml) · [web
   - 新增 `components/schemas`：`ProductCondition`（成色 5 档枚举）/ `ProductDetail`（继承 ProductSummary 全字段）/ `ProductCreateInput`（发布/编辑共用，pattern/约束双端同源）/ `ProductStatusActionInput` / `FavoriteActionData`。
   - 新增 `tags`：`products` / `categories` / `favorites` / `recommendations` / `uploads`（`uploads` 为标签规划扩充的通用 tag，b4 聊天图复用）。
   - 修订：上传校验表述四件套 → 五件套（补内容魔数嗅探：PNG 8 字节签名 / JPEG SOI / WEBP RIFF+WEBP）；鉴权节补「图片 Cookie 通道」（login `Set-Cookie img_token` / `GET /images/{id}` 双通道 / logout 清除，仅图片路由接受 Cookie 认证）；`ProductSummary.condition` 由留白 string 定稿为 `ProductCondition` 枚举引用；错误码表 30xx 行由「批次 2 定义」具体化为二码；标签规划行标注批次 2 已建立商品域部分。
+  - 修订补登（2026-10-23，P3 用户裁定「禁止收藏自家商品」，提交 `590359be`）：`POST /products/{id}/favorite` 描述与错误示例增补 409/9003「不能收藏自己发布的商品」语义及 `own_product` 示例——纯语义澄清、无 schema 结构变化，版本保持 0.3.0 不 bump；后端校验链、mock 同构与详情页 UI 已随 `fix/b2-fav-own` 五层落地。
 - 影响说明：
   - 双端共同：本版本即 b2 双端开发基线，契约冻结为 0.3.0（记入看板「契约冻结版本」列）；任一端发现契约缺陷 → 停手上报契约修订任务，不得私改。
   - 前端：重新生成 `src/api/types.ts` 并同步契约同构 mock 5 个模块（商品发布/详情/列表搜索、收藏、分类选择器、图片上传、首页推荐）。

@@ -544,11 +544,32 @@ class FakeChromaCollection:
             "distances": [[distance for _, distance in top]],
         }
 
-    def update(self, ids, metadata=None):
-        for item_id in ids:
+    def update(
+        self,
+        ids,
+        embeddings=None,
+        metadatas=None,
+        documents=None,
+        images=None,
+        uris=None,
+    ):
+        """镜像 chromadb-client 1.5.9 ``Collection.update`` 真实签名。
+
+        参数名与真实 API 逐字一致（``metadatas`` 复数、无 ``**kwargs``），
+        作为生产调用侧关键字拼写的防回归锚点——传 ``metadata=`` 单数将直接
+        TypeError，与真实 Chroma 行为同构。语义：仅更新已存在条目的提供字段
+        （metadata 按键合并，与真实 update 一致），不创建新条目。
+        """
+        for i, item_id in enumerate(ids):
             item_id = str(item_id)
-            if item_id in self.metadatas and metadata is not None:
-                self.metadatas[item_id].update(metadata)
+            if item_id not in self.vectors:
+                continue
+            if embeddings is not None:
+                self.vectors[item_id] = list(embeddings[i])
+            if documents is not None:
+                self.documents[item_id] = documents[i]
+            if metadatas is not None:
+                self.metadatas[item_id].update(dict(metadatas[i]))
 
     def get(self, ids=None):
         wanted = [str(i) for i in ids] if ids else list(self.vectors)

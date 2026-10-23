@@ -171,7 +171,7 @@ def update_status_metadata(product: Product) -> None:
             return
         metadata = _product_metadata(product)
         chroma_client.get_collection().update(
-            ids=[str(product_id)], metadata=metadata
+            ids=[str(product_id)], metadatas=[metadata]
         )
         collection.update_one(
             {"product_id": product_id},
