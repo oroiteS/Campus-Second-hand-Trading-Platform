@@ -295,3 +295,49 @@ class TestCacheInvalidation:
         client.get(f"{PRODUCTS_URL}/{product.id}", headers=make_auth_header(viewer["id"]))
         db.session.refresh(product)
         assert product.updated_at == before
+
+
+class TestFavoriteEvents:
+    def test_favorite_changed_true_and_false(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header, event_capture,
+    ):
+        """收藏 emit favorited=True；取消 emit favorited=False（仅实际删除时）。"""
+        from tests.test_products import PRODUCTS_URL
+
+        captured = event_capture()
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        buyer = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        headers = make_auth_header(buyer["id"])
+        res = client.post(f"{PRODUCTS_URL}/{product.id}/favorite", headers=headers)
+        assert res.status_code == 200
+        (args,) = captured[events.FAVORITE_CHANGED]
+        user_id, product_arg, favorited = args
+        assert (user_id, favorited) == (buyer["id"], True)
+        assert product_arg.id == product.id
+
+        captured.clear()
+        res = client.delete(f"{PRODUCTS_URL}/{product.id}/favorite", headers=headers)
+        assert res.status_code == 200
+        (args,) = captured[events.FAVORITE_CHANGED]
+        user_id, product_arg, favorited = args
+        assert (user_id, favorited) == (buyer["id"], False)
+
+    def test_unfavorite_idempotent_no_event(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header, event_capture,
+    ):
+        """幂等取消（无记录）不 emit favorited=False。"""
+        from tests.test_products import PRODUCTS_URL
+
+        captured = event_capture()
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        buyer = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        res = client.delete(
+            f"{PRODUCTS_URL}/{product.id}/favorite",
+            headers=make_auth_header(buyer["id"]),
+        )
+        assert res.status_code == 200
+        assert events.FAVORITE_CHANGED not in captured
