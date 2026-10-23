@@ -112,18 +112,20 @@ def _query_prefix() -> str:
 
 
 def _like_fallback(
-    normalized_q: str, filters: dict, reason: str, page: int, page_size: int
+    normalized_q: str, raw_filters: dict, reason: str, page: int, page_size: int
 ) -> dict:
     """LIKE 降级：MySQL 标题匹配（created_at 倒序）+ degraded 标记。
 
     复用公开的 ``product_service.list_on_sale``（scoped_query + on_sale +
     keyword LIKE 同口径 + newest 序 + 同分页与概要预载），不依赖其私有
-    ``_paginate``/``_SUMMARY_LOADS``（跨 service 只用公开名）；``filters``
-    为已归一化字典，list_on_sale 内重复校验幂等。``sort`` 钉死 newest，
-    与原降级实现的固定排序保持一致。
+    ``_paginate``/``_SUMMARY_LOADS``（跨 service 只用公开名）；``raw_filters``
+    为路由层原始（未归一化）字典，值均为 str，由 list_on_sale 内的首次
+    （唯一一次）校验完成归一化——不得透传已归一化值，否则 Decimal 过
+    不 ``_parse_filter_decimal`` 的类型门 → 误 9001（N-1）。``sort`` 钉死
+    newest，与原降级实现的固定排序保持一致。
     """
     result = product_service.list_on_sale(
-        {**filters, "keyword": normalized_q, "sort": "newest"}, page, page_size
+        {**raw_filters, "keyword": normalized_q, "sort": "newest"}, page, page_size
     )
     result["degraded"] = True
     result["degraded_reason"] = reason
@@ -135,12 +137,15 @@ def search(user, q: str, filters: dict, page: int, page_size: int) -> dict:
 
     降级判定为 ``is_available`` + 异常双判定：探测不可用直接降级；探测
     可用但真实调用（embed/chroma query）失败同样降级，绝不 5xx。
+    归一化校验仅向量路径需要（``_apply_business_filters`` 消费 Decimal 等
+    强类型值）；降级路径传原始 filters，归一化由 ``list_on_sale`` 内的
+    校验完成（N-1：避免归一化后二次校验类型门拒收 Decimal）。
     """
     normalized_q = _validate_q(q)
-    normalized_filters = product_service._validate_list_filters(filters)
 
     available, probe_reason = embedding_client.is_available()
     if available:
+        normalized_filters = product_service._validate_list_filters(filters)
         try:
             return _vector_search(normalized_q, normalized_filters, page, page_size)
         except Exception as exc:  # noqa: BLE001 - 向量链路异常 → LIKE 降级
@@ -148,4 +153,4 @@ def search(user, q: str, filters: dict, page: int, page_size: int) -> dict:
     else:
         reason = f"embedding 不可用（{probe_reason}），已降级为 MySQL LIKE 检索"
     logger.info("搜索降级 q=%r user_id=%s: %s", normalized_q, user.id, reason)
-    return _like_fallback(normalized_q, normalized_filters, reason, page, page_size)
+    return _like_fallback(normalized_q, filters, reason, page, page_size)
