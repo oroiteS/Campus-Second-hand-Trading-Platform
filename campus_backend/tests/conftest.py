@@ -387,7 +387,25 @@ class FakeMongoCollection:
     def _match(doc: dict, filter_: dict | None) -> bool:
         if not filter_:
             return True
-        return all(doc.get(key) == value for key, value in filter_.items())
+        for key, value in filter_.items():
+            actual = doc.get(key)
+            if isinstance(value, dict) and value and all(
+                op.startswith("$") for op in value
+            ):
+                # 比较操作符子集（b2be2 画像 24h 去重用 $gte）
+                for op, operand in value.items():
+                    if op == "$gte" and not (actual is not None and actual >= operand):
+                        return False
+                    if op == "$gt" and not (actual is not None and actual > operand):
+                        return False
+                    if op == "$lte" and not (actual is not None and actual <= operand):
+                        return False
+                    if op == "$lt" and not (actual is not None and actual < operand):
+                        return False
+                continue
+            if actual != value:
+                return False
+        return True
 
     @staticmethod
     def _apply(doc: dict, update: dict) -> None:
