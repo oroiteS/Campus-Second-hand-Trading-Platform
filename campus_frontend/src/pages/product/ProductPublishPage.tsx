@@ -113,7 +113,9 @@ function PublishForm({ editId }: PublishFormProps) {
   const [originalPrice, setOriginalPrice] = useState('')
   const [categoryId, setCategoryId] = useState<number | null>(null)
   const [condition, setCondition] = useState<ProductCondition | null>(null)
-  const [campusId, setCampusId] = useState<number | null>(null)
+  // 校区预填发布者校区（契约 ProductCreateInput.campus_id 可空、缺省取发布者校区）：
+  // 单校区学生无选择器也能以本人校区正常发布，多校区学生可在选择器中改选
+  const [campusId, setCampusId] = useState<number | null>(currentUser?.campus?.id ?? null)
   const [images, setImages] = useState<UploadedImage[]>([])
 
   const [errors, setErrors] = useState<PublishErrors>({})
@@ -175,6 +177,8 @@ function PublishForm({ editId }: PublishFormProps) {
   )
   const campusOptions =
     mySchool?.campuses.map((campus) => ({ label: campus.name, value: campus.id })) ?? []
+  // 校区选择器仅多校区学校渲染；必填校验随之收口（单校区学生不再被无选择器的必填卡死）
+  const showCampus = mySchool?.multi_campus === true
 
   function validateForm(): PublishErrors {
     const next: PublishErrors = {}
@@ -188,7 +192,7 @@ function PublishForm({ editId }: PublishFormProps) {
     if (originalError) next.original_price = originalError
     if (categoryId == null) next.category_id = '请选择分类'
     if (condition == null) next.condition = '请选择成色'
-    if (campusId == null) next.campus_id = '请选择校区'
+    if (showCampus && campusId == null) next.campus_id = '请选择校区'
     if (images.length < 1) {
       next.image_ids = `请至少上传 1 张商品图片`
     } else if (images.length > MAX_PRODUCT_IMAGES) {
@@ -279,7 +283,7 @@ function PublishForm({ editId }: PublishFormProps) {
             categoryOptions={(categories.data ?? []).map((c) => ({ label: c.name, value: c.id }))}
             categoryLoading={categories.loading}
             campusOptions={campusOptions}
-            showCampus={mySchool?.multi_campus === true}
+            showCampus={showCampus}
             onTitle={setTitle}
             onDescription={setDescription}
             onPrice={setPrice}
@@ -317,7 +321,7 @@ function PublishForm({ editId }: PublishFormProps) {
         categoryOptions={(categories.data ?? []).map((c) => ({ label: c.name, value: c.id }))}
         categoryLoading={categories.loading}
         campusOptions={campusOptions}
-        showCampus={mySchool?.multi_campus === true}
+        showCampus={showCampus}
         onTitle={setTitle}
         onDescription={setDescription}
         onPrice={setPrice}
