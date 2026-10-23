@@ -248,8 +248,8 @@ export interface paths {
         /**
          * 上传头像
          * @description 需登录。`multipart/form-data` 上传头像，form 字段 `file`：单文件
-         *     jpg/png/webp，≤ 5 MB。服务端四件套校验（扩展名 + MIME + 大小 +
-         *     内容哈希改名），落 `uploads/avatar/<年月>/`；旧头像文件保留不删
+         *     jpg/png/webp，≤ 5 MB。服务端五件套校验（扩展名 + MIME + 大小 +
+         *     内容魔数嗅探 + 内容哈希改名），落 `uploads/avatar/<年月>/`；旧头像文件保留不删
          *     （images 表仅增不改，YAGNI）。
          *
          *     - 类型或大小不符 `422 / 9001`，`data.fields.file` 携带原因。
@@ -345,17 +345,339 @@ export interface paths {
         };
         /**
          * 图片实体鉴权访问
-         * @description 需登录。返回图片实体二进制（`image/jpeg|png|webp`）。**本接口不走
-         *     统一响应体 envelope**，直接输出文件流；出错时仍按 `ErrorEnvelope`
+         * @description 需登录。鉴权：`Authorization: Bearer` 或图片 Cookie（见总则
+         *     「图片 Cookie 通道」）双通道，二者走同一 JWT 校验与黑名单。
+         *     返回图片实体二进制（`image/jpeg|png|webp`）。**本接口不走统一
+         *     响应体 envelope**，直接输出文件流；出错时仍按 `ErrorEnvelope`
          *     的 JSON 结构返回错误体。
          *
          *     - 访问控制（NFR-08）：`purpose = student_card` 的图片**仅上传者
-         *       本人与管理员**可读；其余（本批次仅 `avatar`）登录即可读。
+         *       本人与管理员**可读；其余（`avatar` 与本版本扩展的 `product`）
+         *       登录即可读。
          *     - 越权与不存在一律 `404 / 9002`，不区分两种情况（防探测）。
-         *     - 批次 2 起商品图、批次 4 聊天图复用本接口，`purpose` 值域随
-         *       批次扩展。
+         *     - `purpose` 值域本版本扩展 `product`（商品图）；批次 4 聊天图
+         *       复用本接口，值域随批次继续扩展。
          */
         get: operations["getImage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 本校在售商品分页列表
+         * @description 需登录且已通过校园认证（verified）。本校 `status = on_sale` 商品
+         *     分页列表；管理员对本校跨校区可见全部商品（`g.scope_all`），但
+         *     发布 / 编辑 / 收藏 / 上传等写操作对管理员一律拒绝（见各写接口）。
+         *
+         *     - 筛选：`category_id`（须为启用分类）/ `condition` / `price_min` /
+         *       `price_max`（数值 ≥ 0 且 `price_min ≤ price_max`，违反 → 9001）/
+         *       `campus_id`（须为本校启用校区）/ `keyword`（LIKE 标题匹配，
+         *       全角不转义直配，≤ 100 字符）；`sort` 缺省 `newest`。
+         *     - 筛选参数无效（分类 / 校区不存在或停用、价格区间颠倒等）返回
+         *       `422 / 9001`，`data.fields` 字段级错误。
+         *     - 列表缓存 `product:list:{school}:{hash}` TTL 120s 为**可选优化**
+         *       （NFR-04 达标不强制；若实现，编辑 / 状态变更 / 删除须同步失效）。
+         */
+        get: operations["listProducts"];
+        put?: never;
+        /**
+         * 发布商品
+         * @description 需登录且已通过校园认证（verified，学生；管理员发布一律
+         *     `409 / 9003`，message 说明管理员无交易能力——与 b1 认证提交对
+         *     管理员的处理口径一致）。
+         *
+         *     - 字段校验（双端同源，约束见 `ProductCreateInput`）失败统一
+         *       `422 / 9001`（`data.fields` 字段级）：含 `image_ids` 归属
+         *       （须本人 `purpose=product` 上传）与数量（1–9）、`category_id`
+         *       无效、`campus_id` 非本校启用校区。
+         *     - 发布成功商品 `status = on_sale`、`moderation_status = normal`
+         *       （敏感词库批次 5 接入）；**发布成功不依赖向量写入结果**（向量
+         *       异步写入，失败进重试队列）。
+         */
+        post: operations["createProduct"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 我的商品
+         * @description 需登录且已通过校园认证（verified，学生）。当前用户发布的商品分页
+         *     列表，按 `created_at` 倒序；只看自己的，不受本校过滤之外的 scope
+         *     影响。`status` 缺省返回除 `deleted` 外全部状态。
+         */
+        get: operations["listMyProducts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 商品向量搜索
+         * @description 需登录且已通过校园认证（verified）。`q` 拼指令前缀向量化 →
+         *     Chroma 余弦召回 top 60（where：本校 + `on_sale`）→ MySQL 按 id
+         *     与业务条件精筛 → **按原始相似度降序**分页；`n_results` 取召回
+         *     上限 1.5 倍（90）供过滤损耗。
+         *
+         *     - `q` 必填 1–100 字符，空白视为未填写 → `422 / 9001`。
+         *     - 降级：Embedding 或 Chroma 不可用 → MySQL `LIKE` 标题匹配
+         *       （按 `created_at` 倒序），`data` 附加 `degraded: true` 与
+         *       `degraded_reason`；LIKE 恒可用，故本接口实际不触达 `9004`
+         *       （正常降级一律 200 + `degraded`）。
+         *     - **不写缓存**（条件组合爆炸）。
+         */
+        get: operations["searchProducts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 商品详情
+         * @description 需登录且已通过校园认证（verified）。返回商品详情完整形态（含
+         *     `is_favorited` / `view_count` / 图集数组）。
+         *
+         *     - 可见性：本校 `on_sale` 对全员；`trading` 仅买卖双方（本批无
+         *       订单，恒不满足）与管理员；`off_sale` 仅卖家与管理员；
+         *       `sold` / `deleted` 无人可见；非本校 / 越权 / 不存在一律
+         *       `404 / 9002`（防探测，不区分三种情况）。
+         *     - 服务端顺带记录点击行为（写行为流水 + 画像更新；异步允许失败，
+         *       不影响本响应延迟——实现细节见 b2be2 任务卡）。
+         */
+        get: operations["getProductDetail"];
+        /**
+         * 编辑商品
+         * @description 需登录且已通过校园认证（verified，学生，仅发布者本人；管理员编辑
+         *     一律 `409 / 9003`，message 说明管理员无交易能力）。
+         *
+         *     - 请求体为 `ProductCreateInput` 全量字段；`image_ids` **全量
+         *       替换**，数组顺序即展示排序。
+         *     - 可编辑状态：`on_sale` / `off_sale`（off_sale 编辑后仍
+         *       off_sale）；`trading` / `sold` → `409 / 3001`；`deleted` →
+         *       `404 / 9002`。
+         *     - 非本人 / 非本校 / 不存在一律 `404 / 9002`，不区分（防探测）。
+         *     - 编辑成功失效 `product:detail` 缓存并触发向量重建事件
+         *       （`text_hash` 未变则订阅方跳过——见 b2be2）。
+         */
+        put: operations["updateProduct"];
+        post?: never;
+        /**
+         * 删除商品（软删）
+         * @description 需登录且已通过校园认证（verified，学生，仅发布者本人）。软删除：
+         *     `status` 置 `deleted`，图片与收藏记录保留（不可见，YAGNI）。
+         *
+         *     - 可删状态：`on_sale` / `off_sale`；`trading` / `sold` →
+         *       `409 / 3001`；已删 / 非本人 / 非本校 / 不存在一律
+         *       `404 / 9002`（防探测）。
+         *     - 成功触发向量删除事件与 detail / 列表缓存失效。
+         */
+        delete: operations["deleteProduct"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/products/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 上架 / 下架商品
+         * @description 需登录且已通过校园认证（verified，学生，仅发布者本人）。目标状态
+         *     仅 `on_sale` / `off_sale` 二值。
+         *
+         *     - 流转：`on_sale → off_sale`（卖家下架）、`off_sale → on_sale`
+         *       （重新上架）；商品被管理员强制下架（`forced_off`）时重新上架 →
+         *       `403 / 3002`（仅管理员可恢复，批次 5 场景前置）；其余源状态
+         *       （`trading` / `sold`）→ `409 / 3001`。
+         *     - 成功失效 detail / 列表相关缓存，并发出向量状态同步事件。
+         */
+        patch: operations["updateProductStatus"];
+        trace?: never;
+    };
+    "/products/{id}/favorite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 收藏商品
+         * @description 需登录且已通过校园认证（verified，学生；管理员收藏一律
+         *     `409 / 9003`，message 说明管理员无交易能力）。无请求体。
+         *
+         *     - 仅本校 `on_sale` 商品可收藏：商品非 on_sale → `409 / 3001`
+         *       （message 说明当前状态与允许的操作）；非本校 / 不存在 →
+         *       `404 / 9002`（防探测）。
+         *     - 重复收藏 → `409 / 9003`。
+         *     - 不能收藏自己发布的商品 → `409 / 9003`（message 说明不能收藏
+         *       自己发布的商品）。
+         *     - **收藏关系写库必须成功**；画像更新允许失败重试（异步，需求
+         *       「收藏与画像」节）。
+         */
+        post: operations["favoriteProduct"];
+        /**
+         * 取消收藏（幂等）
+         * @description 需登录且已通过校园认证（verified，学生）。无请求体；幂等：未收藏
+         *     同样返回 200。按 (user, product) 直查本校记录，无记录 → 200；
+         *     商品非本校 / 不存在仍 `404 / 9002`（防探测）。收藏时已校验同校，
+         *     不存在跨校收藏记录边界。
+         */
+        delete: operations["unfavoriteProduct"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/favorites/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 我的收藏列表
+         * @description 需登录且已通过校园认证（verified，学生）。当前用户收藏的商品分页
+         *     列表，按收藏时间（`favorited_at`）倒序；条目为商品概要 + 收藏
+         *     时间，**含 `off_sale` / `sold` / `trading` 商品**（前端按
+         *     status 置灰并提供取消入口）；`deleted` 商品条目不返回。
+         */
+        get: operations["listMyFavorites"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 商品分类列表
+         * @description 需登录且已通过校园认证（verified；2026-10-21 用户确认，与商品域
+         *     准入线一致）。全部启用（`enabled`）分类，按 `sort_order` 升序、
+         *     id 升序；**不分页**——全局分类量小，发布 / 筛选选择器一次取全。
+         *     缓存 `product:category:all` TTL 3600s（管理员维护后失效——
+         *     批次 5 接手）。
+         */
+        get: operations["listCategories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 通用图片上传
+         * @description 需登录且已通过校园认证（verified，学生；管理员上传一律
+         *     `409 / 9003`，message 说明管理员无交易能力）。`multipart/form-data`：
+         *     `file` 单文件 + `purpose` form 字段（本批次仅 `product`）。
+         *
+         *     - 五件套校验（见总则「通用格式约定」）：扩展名 + MIME + 大小
+         *       （≤ 5 MB）+ 内容魔数嗅探（PNG 8 字节签名 / JPEG SOI / WEBP
+         *       RIFF+WEBP）+ 内容哈希改名；不符 `422 / 9001`，
+         *       `data.fields.file` 携带原因。
+         *     - 实体落 `uploads/product/<年月>/`，文件名改写为内容哈希；
+         *       `owner_id` 记录；**发布前图片无商品关联**（孤儿，见清理策略）。
+         *     - b4 聊天图复用本接口扩展 `purpose=image_message`。
+         */
+        post: operations["uploadImage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/recommendations/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 首页推荐
+         * @description 需登录且已通过校园认证（verified，学生；管理员 → 空列表 200，无
+         *     推荐语义）。返回 ≤ 40 个本校 `on_sale` 商品（排除自己发布、批内
+         *     按 id 去重）。
+         *
+         *     - 配比：有画像 32 画像召回 + 8 随机补足（召回不足以随机补齐
+         *       缺口）；冷启动（无 `user_profiles` 文档）全随机 40。
+         *     - 缓存 `product:home:{school}:{user}` TTL 300s；`refresh`
+         *       传 `"true"` 时绕过缓存强制重算（「换一批」）。
+         *     - 降级：Embedding / Chroma / Mongo 任一不可用 → 全随机 +
+         *       `degraded: true`；Redis 不可用 → 不缓存直算，**不算 degraded**。
+         */
+        get: operations["getHomeRecommendations"];
         put?: never;
         post?: never;
         delete?: never;
@@ -453,7 +775,8 @@ export interface components {
         };
         /**
          * @description 图片引用。实体文件经后端鉴权路由 `GET /api/images/{id}` 访问，
-         *     不暴露可枚举静态目录。
+         *     不暴露可枚举静态目录；`url` 为同源相对路径，`<img>` 标签经图片
+         *     Cookie 通道直接可渲染。
          */
         ImageRef: {
             /** Format: int64 */
@@ -533,11 +856,7 @@ export interface components {
              * @example 399
              */
             original_price?: number | null;
-            /**
-             * @description 成色展示文本；枚举值域随批次 2 契约更新定稿。
-             * @example 九成新
-             */
-            condition: string;
+            condition: components["schemas"]["ProductCondition"];
             status: components["schemas"]["ProductStatus"];
             /** @description 封面图（图集首图）；无图商品为 null。 */
             cover?: components["schemas"]["ImageRef"] | null;
@@ -551,6 +870,74 @@ export interface components {
              * @description 发布时间（ISO 8601，+08:00）。
              */
             created_at: string;
+        };
+        /**
+         * @description 成色：brand_new 全新（未拆封/未使用）/ as_new 99 新（几乎无使用痕迹）/
+         *     excellent 九成新（轻微使用痕迹）/ good 八成新（少量磨损，功能完好）/
+         *     fair 七成新及以下（明显使用痕迹）。中文仅出现在展示文案。
+         * @enum {string}
+         */
+        ProductCondition: "brand_new" | "as_new" | "excellent" | "good" | "fair";
+        /**
+         * @description 商品详情完整形态（继承 ProductSummary 全字段）：详情页、发布与
+         *     编辑成功响应共用。
+         */
+        ProductDetail: components["schemas"]["ProductSummary"] & {
+            /** @description 商品描述（1–2000 字符）。 */
+            description: string;
+            /** @description 图集，数组顺序即展示排序。 */
+            images: components["schemas"]["ImageRef"][];
+            /** @description 浏览量。 */
+            view_count: number;
+            /** @description 当前用户是否已收藏（管理员恒 false）。 */
+            is_favorited: boolean;
+            /**
+             * Format: date-time
+             * @description 最近更新时间（ISO 8601，+08:00）。
+             */
+            updated_at: string;
+        };
+        /** @description 收藏 / 取消收藏操作结果数据体。 */
+        FavoriteActionData: {
+            /** @description 操作后收藏状态（收藏 true / 取消 false）。 */
+            favorited: boolean;
+            /** @description 该商品最新收藏数。 */
+            favorite_count: number;
+        };
+        /**
+         * @description 商品发布 / 编辑共用请求体（编辑为全量替换；`image_ids` 数组顺序
+         *     即展示排序）。
+         */
+        ProductCreateInput: {
+            /** @description 标题（1–50 字符）。 */
+            title: string;
+            /** @description 描述（1–2000 字符）。 */
+            description: string;
+            /** @description 售价（元，0.01–99999.99，最多两位小数；后端 Decimal 校验，禁 float 直比）。 */
+            price: number;
+            /** @description 原价（元），可空；填写时约束同 price。 */
+            original_price?: number | null;
+            /**
+             * Format: int64
+             * @description 分类 id；须为存在且 enabled 的分类（服务端查库复验）。
+             */
+            category_id: number;
+            condition: components["schemas"]["ProductCondition"];
+            /**
+             * Format: int64
+             * @description 校区 id；缺省取发布者校区；填写须为本人学校启用校区。
+             */
+            campus_id?: number | null;
+            /** @description 已上传图片 id；须为本人 purpose=product 上传；数组序=排序。 */
+            image_ids: number[];
+        };
+        /** @description 商品上下架请求体（目标状态仅 on_sale / off_sale 二值）。 */
+        ProductStatusActionInput: {
+            /**
+             * @description 目标状态：on_sale 上架 / off_sale 下架。
+             * @enum {string}
+             */
+            status: "on_sale" | "off_sale";
         };
         /** @description 个人资料完整形态（与 UserSummary 概要形态并存）。 */
         UserProfile: {
@@ -1049,9 +1436,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 登录成功，返回访问令牌与用户资料。 */
+            /** @description 登录成功，返回访问令牌与用户资料；同时 Set-Cookie 签发图片 Cookie 通道令牌 img_token。 */
             200: {
                 headers: {
+                    /**
+                     * @description 图片 Cookie 通道令牌：`img_token=<JWT>`（httpOnly、
+                     *     SameSite=Lax、Path=/api/images、TTL 同访问令牌，值为同一
+                     *     JWT），供 `GET /api/images/{id}` 缺失 `Authorization` 头时
+                     *     回退使用；`POST /auth/logout` 对应清除。
+                     * @example img_token=eyJhbGciOiJIUzI1NiJ9.sig; HttpOnly; SameSite=Lax; Path=/api/images; Max-Age=86400
+                     */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1686,6 +2081,1080 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    listProducts: {
+        parameters: {
+            query?: {
+                /** @description 分类 id 筛选；填写时须为启用分类，否则 9001。 */
+                category_id?: number;
+                /** @description 成色筛选（ProductCondition 单值）。 */
+                condition?: components["schemas"]["ProductCondition"];
+                /** @description 价格下界（元，≥ 0）；须 ≤ price_max。 */
+                price_min?: number;
+                /** @description 价格上界（元，≥ 0）。 */
+                price_max?: number;
+                /** @description 校区 id 筛选；填写时须为本校启用校区，否则 9001。 */
+                campus_id?: number;
+                /** @description 标题关键词（LIKE 匹配，全角不转义直配，≤ 100 字符）。 */
+                keyword?: string;
+                /** @description 排序方式，缺省 newest。 */
+                sort?: "newest" | "price_asc" | "price_desc";
+                /** @description 页码，从 1 起。 */
+                page?: components["parameters"]["PageParam"];
+                /** @description 每页条数，默认 20，上限 100。 */
+                page_size?: components["parameters"]["PageSizeParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 本校在售商品分页列表（仅 on_sale）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "items": [
+                     *           {
+                     *             "id": 101,
+                     *             "title": "罗技 K845 机械键盘",
+                     *             "price": 199,
+                     *             "original_price": 399,
+                     *             "condition": "excellent",
+                     *             "status": "on_sale",
+                     *             "cover": {
+                     *               "id": 42,
+                     *               "url": "/api/images/42"
+                     *             },
+                     *             "favorite_count": 3,
+                     *             "category": {
+                     *               "id": 1,
+                     *               "name": "数码电子"
+                     *             },
+                     *             "seller": {
+                     *               "id": 2,
+                     *               "display_name": "小明-示例大学(东校区)",
+                     *               "nickname": "小明",
+                     *               "auth_status": "approved",
+                     *               "role": "student"
+                     *             },
+                     *             "campus": {
+                     *               "id": 1,
+                     *               "school_id": 1,
+                     *               "name": "东校区"
+                     *             },
+                     *             "created_at": "2026-10-21T10:00:00+08:00"
+                     *           }
+                     *         ],
+                     *         "page": 1,
+                     *         "page_size": 20,
+                     *         "total": 1,
+                     *         "pages": 1
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["PaginatedData"] & {
+                            items?: components["schemas"]["ProductSummary"][];
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description 筛选参数无效（code 9001；data.fields 字段级错误）。 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9001,
+                     *       "message": "参数校验失败",
+                     *       "data": {
+                     *         "fields": {
+                     *           "price_min": "价格下界不得大于价格上界"
+                     *         }
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createProduct: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "title": "罗技 K845 机械键盘",
+                 *       "description": "去年购入，自用一年，键帽轻微打油，功能完好。",
+                 *       "price": 199,
+                 *       "original_price": 399,
+                 *       "category_id": 1,
+                 *       "condition": "excellent",
+                 *       "campus_id": 1,
+                 *       "image_ids": [
+                 *         42,
+                 *         43,
+                 *         44
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["ProductCreateInput"];
+            };
+        };
+        responses: {
+            /** @description 发布成功，返回商品详情（status = on_sale）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 101,
+                     *         "title": "罗技 K845 机械键盘",
+                     *         "price": 199,
+                     *         "original_price": 399,
+                     *         "condition": "excellent",
+                     *         "status": "on_sale",
+                     *         "cover": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "favorite_count": 0,
+                     *         "category": {
+                     *           "id": 1,
+                     *           "name": "数码电子"
+                     *         },
+                     *         "seller": {
+                     *           "id": 1,
+                     *           "display_name": "小张-示例大学(东校区)",
+                     *           "nickname": "小张",
+                     *           "auth_status": "approved",
+                     *           "role": "student"
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "created_at": "2026-10-21T10:00:00+08:00",
+                     *         "description": "去年购入，自用一年，键帽轻微打油，功能完好。",
+                     *         "images": [
+                     *           {
+                     *             "id": 42,
+                     *             "url": "/api/images/42"
+                     *           },
+                     *           {
+                     *             "id": 43,
+                     *             "url": "/api/images/43"
+                     *           },
+                     *           {
+                     *             "id": 44,
+                     *             "url": "/api/images/44"
+                     *           }
+                     *         ],
+                     *         "view_count": 0,
+                     *         "is_favorited": false,
+                     *         "updated_at": "2026-10-21T10:00:00+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["ProductDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description 管理员发布拒绝（code 9003；管理员无交易能力）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9003,
+                     *       "message": "管理员无交易能力，不能发布商品",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 字段校验失败（code 9001；含 image_ids 归属/数量、category_id/campus_id 无效）。 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9001,
+                     *       "message": "参数校验失败",
+                     *       "data": {
+                     *         "fields": {
+                     *           "image_ids": "图片须为本人上传的商品图，数量 1–9 张"
+                     *         }
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listMyProducts: {
+        parameters: {
+            query?: {
+                /** @description 状态筛选（ProductStatus 单值）；缺省返回除 deleted 外全部。 */
+                status?: components["schemas"]["ProductStatus"];
+                /** @description 页码，从 1 起。 */
+                page?: components["parameters"]["PageParam"];
+                /** @description 每页条数，默认 20，上限 100。 */
+                page_size?: components["parameters"]["PageSizeParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 我的商品分页列表（created_at 倒序）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "items": [
+                     *           {
+                     *             "id": 101,
+                     *             "title": "罗技 K845 机械键盘",
+                     *             "price": 199,
+                     *             "original_price": 399,
+                     *             "condition": "excellent",
+                     *             "status": "off_sale",
+                     *             "cover": {
+                     *               "id": 42,
+                     *               "url": "/api/images/42"
+                     *             },
+                     *             "favorite_count": 3,
+                     *             "category": {
+                     *               "id": 1,
+                     *               "name": "数码电子"
+                     *             },
+                     *             "seller": {
+                     *               "id": 1,
+                     *               "display_name": "小张-示例大学(东校区)",
+                     *               "nickname": "小张",
+                     *               "auth_status": "approved",
+                     *               "role": "student"
+                     *             },
+                     *             "campus": {
+                     *               "id": 1,
+                     *               "school_id": 1,
+                     *               "name": "东校区"
+                     *             },
+                     *             "created_at": "2026-10-21T10:00:00+08:00"
+                     *           }
+                     *         ],
+                     *         "page": 1,
+                     *         "page_size": 20,
+                     *         "total": 1,
+                     *         "pages": 1
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["PaginatedData"] & {
+                            items?: components["schemas"]["ProductSummary"][];
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    searchProducts: {
+        parameters: {
+            query: {
+                /** @description 搜索词（1–100 字符）；空白视为未填写 → 9001。 */
+                q: string;
+                /** @description 分类 id 筛选；填写时须为启用分类，否则 9001。 */
+                category_id?: number;
+                /** @description 成色筛选（ProductCondition 单值）。 */
+                condition?: components["schemas"]["ProductCondition"];
+                /** @description 价格下界（元，≥ 0）；须 ≤ price_max。 */
+                price_min?: number;
+                /** @description 价格上界（元，≥ 0）。 */
+                price_max?: number;
+                /** @description 校区 id 筛选；填写时须为本校启用校区，否则 9001。 */
+                campus_id?: number;
+                /** @description 页码，从 1 起。 */
+                page?: components["parameters"]["PageParam"];
+                /** @description 每页条数，默认 20，上限 100。 */
+                page_size?: components["parameters"]["PageSizeParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description 搜索结果分页（按原始相似度降序；降级时按 created_at 倒序并
+             *     附加 degraded 字段）。
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["PaginatedData"] & {
+                            items?: components["schemas"]["ProductSummary"][];
+                            /** @description 降级标记；正常响应不带（false 语义）。 */
+                            degraded?: boolean;
+                            /** @description 降级原因摘要；正常响应不带。 */
+                            degraded_reason?: string;
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description 搜索词或筛选参数无效（code 9001；q 空白视为未填写）。 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9001,
+                     *       "message": "参数校验失败",
+                     *       "data": {
+                     *         "fields": {
+                     *           "q": "搜索词不能为空，长度须为 1–100 字符"
+                     *         }
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getProductDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 商品 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 商品详情（含 is_favorited / view_count / 图集）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 101,
+                     *         "title": "罗技 K845 机械键盘",
+                     *         "price": 199,
+                     *         "original_price": 399,
+                     *         "condition": "excellent",
+                     *         "status": "on_sale",
+                     *         "cover": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "favorite_count": 3,
+                     *         "category": {
+                     *           "id": 1,
+                     *           "name": "数码电子"
+                     *         },
+                     *         "seller": {
+                     *           "id": 2,
+                     *           "display_name": "小明-示例大学(东校区)",
+                     *           "nickname": "小明",
+                     *           "auth_status": "approved",
+                     *           "role": "student"
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "created_at": "2026-10-21T10:00:00+08:00",
+                     *         "description": "去年购入，自用一年，键帽轻微打油，功能完好。",
+                     *         "images": [
+                     *           {
+                     *             "id": 42,
+                     *             "url": "/api/images/42"
+                     *           },
+                     *           {
+                     *             "id": 43,
+                     *             "url": "/api/images/43"
+                     *           },
+                     *           {
+                     *             "id": 44,
+                     *             "url": "/api/images/44"
+                     *           }
+                     *         ],
+                     *         "view_count": 27,
+                     *         "is_favorited": true,
+                     *         "updated_at": "2026-10-21T10:00:00+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["ProductDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description 商品不存在、非本校或无权访问（code 9002；不区分，防探测）。 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9002,
+                     *       "message": "商品不存在",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateProduct: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 商品 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "title": "罗技 K845 机械键盘（降价急出）",
+                 *       "description": "去年购入，自用一年，键帽轻微打油，功能完好；急出降价。",
+                 *       "price": 179,
+                 *       "original_price": 399,
+                 *       "category_id": 1,
+                 *       "condition": "excellent",
+                 *       "campus_id": 1,
+                 *       "image_ids": [
+                 *         42,
+                 *         44
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["ProductCreateInput"];
+            };
+        };
+        responses: {
+            /** @description 编辑成功，返回最新商品详情。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 101,
+                     *         "title": "罗技 K845 机械键盘（降价急出）",
+                     *         "price": 179,
+                     *         "original_price": 399,
+                     *         "condition": "excellent",
+                     *         "status": "on_sale",
+                     *         "cover": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "favorite_count": 3,
+                     *         "category": {
+                     *           "id": 1,
+                     *           "name": "数码电子"
+                     *         },
+                     *         "seller": {
+                     *           "id": 1,
+                     *           "display_name": "小张-示例大学(东校区)",
+                     *           "nickname": "小张",
+                     *           "auth_status": "approved",
+                     *           "role": "student"
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "created_at": "2026-10-21T10:00:00+08:00",
+                     *         "description": "去年购入，自用一年，键帽轻微打油，功能完好；急出降价。",
+                     *         "images": [
+                     *           {
+                     *             "id": 42,
+                     *             "url": "/api/images/42"
+                     *           },
+                     *           {
+                     *             "id": 44,
+                     *             "url": "/api/images/44"
+                     *           }
+                     *         ],
+                     *         "view_count": 27,
+                     *         "is_favorited": false,
+                     *         "updated_at": "2026-10-21T11:00:00+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["ProductDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description 商品状态不允许编辑（code 3001）或管理员编辑拒绝（code 9003）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    deleteProduct: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 商品 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 删除成功（data 为 null；status 置 deleted，图片与收藏记录保留）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        /** @description 固定为 null。 */
+                        data?: unknown;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description 商品状态不允许删除（code 3001；仅 on_sale / off_sale 可删）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 3001,
+                     *       "message": "商品已售出，不允许删除",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateProductStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 商品 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "status": "off_sale"
+                 *     }
+                 */
+                "application/json": components["schemas"]["ProductStatusActionInput"];
+            };
+        };
+        responses: {
+            /** @description 状态更新成功，返回最新商品概要。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 101,
+                     *         "title": "罗技 K845 机械键盘",
+                     *         "price": 199,
+                     *         "original_price": 399,
+                     *         "condition": "excellent",
+                     *         "status": "off_sale",
+                     *         "cover": {
+                     *           "id": 42,
+                     *           "url": "/api/images/42"
+                     *         },
+                     *         "favorite_count": 3,
+                     *         "category": {
+                     *           "id": 1,
+                     *           "name": "数码电子"
+                     *         },
+                     *         "seller": {
+                     *           "id": 1,
+                     *           "display_name": "小张-示例大学(东校区)",
+                     *           "nickname": "小张",
+                     *           "auth_status": "approved",
+                     *           "role": "student"
+                     *         },
+                     *         "campus": {
+                     *           "id": 1,
+                     *           "school_id": 1,
+                     *           "name": "东校区"
+                     *         },
+                     *         "created_at": "2026-10-21T10:00:00+08:00"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["ProductSummary"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description 未通过校园认证（code 1004）或商品已被管理员强制下架（code 3002）。 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description 源状态不允许该流转（code 3001；如 trading / sold 商品上下架）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 3001,
+                     *       "message": "商品当前状态为交易中，仅上架或已下架商品可执行上下架",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            422: components["responses"]["ValidationError"];
+        };
+    };
+    favoriteProduct: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 商品 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 收藏成功，返回最新收藏状态与该商品收藏数。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "favorited": true,
+                     *         "favorite_count": 4
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["FavoriteActionData"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description 重复收藏 / 收藏自己发布的商品（code 9003）或商品状态不允许收藏（code 3001）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    unfavoriteProduct: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 商品 id。 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 取消成功（幂等，未收藏同样 200），返回最新收藏状态与收藏数。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "favorited": false,
+                     *         "favorite_count": 3
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["FavoriteActionData"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listMyFavorites: {
+        parameters: {
+            query?: {
+                /** @description 页码，从 1 起。 */
+                page?: components["parameters"]["PageParam"];
+                /** @description 每页条数，默认 20，上限 100。 */
+                page_size?: components["parameters"]["PageSizeParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 我的收藏分页列表（favorited_at 倒序）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "items": [
+                     *           {
+                     *             "id": 101,
+                     *             "title": "罗技 K845 机械键盘",
+                     *             "price": 199,
+                     *             "original_price": 399,
+                     *             "condition": "excellent",
+                     *             "status": "off_sale",
+                     *             "cover": {
+                     *               "id": 42,
+                     *               "url": "/api/images/42"
+                     *             },
+                     *             "favorite_count": 3,
+                     *             "category": {
+                     *               "id": 1,
+                     *               "name": "数码电子"
+                     *             },
+                     *             "seller": {
+                     *               "id": 2,
+                     *               "display_name": "小明-示例大学(东校区)",
+                     *               "nickname": "小明",
+                     *               "auth_status": "approved",
+                     *               "role": "student"
+                     *             },
+                     *             "campus": {
+                     *               "id": 1,
+                     *               "school_id": 1,
+                     *               "name": "东校区"
+                     *             },
+                     *             "created_at": "2026-10-21T10:00:00+08:00",
+                     *             "favorited_at": "2026-10-21T12:00:00+08:00"
+                     *           }
+                     *         ],
+                     *         "page": 1,
+                     *         "page_size": 20,
+                     *         "total": 1,
+                     *         "pages": 1
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["PaginatedData"] & {
+                            items?: (components["schemas"]["ProductSummary"] & {
+                                /**
+                                 * Format: date-time
+                                 * @description 收藏时间（ISO 8601，+08:00）。
+                                 */
+                                favorited_at: string;
+                            })[];
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listCategories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 启用分类列表（sort_order 升序、id 升序，不分页）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": [
+                     *         {
+                     *           "id": 1,
+                     *           "name": "数码电子"
+                     *         },
+                     *         {
+                     *           "id": 2,
+                     *           "name": "图书教材"
+                     *         },
+                     *         {
+                     *           "id": 3,
+                     *           "name": "生活用品"
+                     *         }
+                     *       ]
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["CategoryRef"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    uploadImage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description 图片文件（jpg/png/webp，≤ 5 MB，五件套校验）。
+                     */
+                    file: string;
+                    /**
+                     * @description 上传用途；本批次仅 product（商品图），b4 扩展 image_message（聊天图）。
+                     * @enum {string}
+                     */
+                    purpose: "product";
+                };
+            };
+        };
+        responses: {
+            /** @description 上传成功，返回图片引用（发布前无商品关联）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 0,
+                     *       "message": "ok",
+                     *       "data": {
+                     *         "id": 42,
+                     *         "url": "/api/images/42"
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: components["schemas"]["ImageRef"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description 管理员上传拒绝（code 9003；管理员无交易能力）。 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9003,
+                     *       "message": "管理员无交易能力，不能上传商品图片",
+                     *       "data": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description 文件类型 / 大小 / 魔数不符（code 9001；data.fields.file 携带原因）。 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "code": 9001,
+                     *       "message": "参数校验失败",
+                     *       "data": {
+                     *         "fields": {
+                     *           "file": "仅支持 jpg / png / webp 且不超过 5 MB，文件内容与扩展名不符"
+                     *         }
+                     *       }
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getHomeRecommendations: {
+        parameters: {
+            query?: {
+                /** @description 传 "true" 时绕过缓存强制重算（「换一批」）。 */
+                refresh?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 首页推荐列表（≤ 40 个；管理员返回空列表）。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuccessEnvelope"] & {
+                        data?: {
+                            items: components["schemas"]["ProductSummary"][];
+                            /** @description 降级标记；正常响应不带（false 语义）。 */
+                            degraded?: boolean;
+                            /** @description 降级原因摘要；正常响应不带。 */
+                            degraded_reason?: string;
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
 }

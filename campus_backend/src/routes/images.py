@@ -6,15 +6,16 @@
 
 from flask import Blueprint, g, send_file
 
-from src.common.auth import login_required
+from src.common.auth import login_required_img
 from src.services import image_service
 
 bp = Blueprint("images", __name__)
 
 
 @bp.get("/<int:image_id>")
-@login_required
+@login_required_img
 def get_image(image_id: int):
-    """GET /api/images/{id} —— 图片实体二进制（鉴权访问，非静态目录）。"""
+    """GET /api/images/{id} —— 图片实体二进制（Bearer 头优先，缺失回退
+    img_token Cookie；二者同一 JWT 校验与黑名单，契约 0.3.0 双通道）。"""
     image = image_service.get_with_access_check(image_id, g.current_user)
     return send_file(image_service.open_file(image), mimetype=image.mime)

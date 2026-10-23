@@ -1,0 +1,58 @@
+/** 筛选条：flex 换行布局，移动端纵向堆叠，≥768px 横向排布 */
+
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+@media (min-width: 768px) {
+  .filter-bar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+}
+
+.filter-bar__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+@media (min-width: 768px) {
+  .filter-bar__field {
+    flex: 0 1 11rem;
+  }
+
+  .filter-bar__field--price {
+    flex: 1 1 15rem;
+  }
+
+  .filter-bar__field--sort {
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+  }
+}
+
+.filter-bar__label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.filter-bar__price-inputs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.filter-bar__price-inputs .ant-input {
+  min-width: 0;
+}

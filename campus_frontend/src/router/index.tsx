@@ -1,7 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 import { AdminLayout } from '../layouts/AdminLayout'
 import { UserLayout } from '../layouts/UserLayout'
-import { GuestOnly, RequireAdmin, RequireAuth } from './guards'
+import { GuestOnly, RequireAdmin, RequireAuth, RequireStudent, RequireVerified } from './guards'
 import {
   AdminDashboardPage,
   CertificationPage,
@@ -9,14 +9,21 @@ import {
   HomePage,
   LoginPage,
   NotFoundPage,
+  ProductDetailPage,
+  ProductListPage,
+  MyFavoritesPage,
+  MyProductsPage,
+  ProductPublishPage,
   ProfilePage,
   RegisterPage,
+  SearchPage,
 } from './lazyPages'
 
 /**
- * 路由表（批次 0 骨架）：
- * - 公开：/（首页健康面板）、游客专属 auth 三页（GuestOnly）
- * - 需登录（RequireAuth）：/certification、/profile
+ * 路由表：
+ * - 游客专属 auth 三页（GuestOnly）；需登录（RequireAuth）：/certification、/profile
+ * - 商品域浏览面（RequireVerified）：首页推荐（AC-02 准入线）
+ * - 商品域学生面（RequireStudent，后续步骤增量接入）
  * - 需管理员（RequireAdmin）：/admin
  * 页面入口另有二次守卫（见各页面），路由 + 页面双层拦截。
  */
@@ -25,7 +32,24 @@ export const router = createBrowserRouter([
     path: '/',
     element: <UserLayout />,
     children: [
-      { index: true, element: <HomePage /> },
+      {
+        element: <RequireVerified />,
+        children: [
+          { index: true, element: <HomePage /> },
+          { path: 'products', element: <ProductListPage /> },
+          { path: 'products/:id', element: <ProductDetailPage /> },
+          { path: 'search', element: <SearchPage /> },
+        ],
+      },
+      {
+        element: <RequireStudent />,
+        children: [
+          { path: 'publish', element: <ProductPublishPage /> },
+          { path: 'products/:id/edit', element: <ProductPublishPage /> },
+          { path: 'my/products', element: <MyProductsPage /> },
+          { path: 'my/favorites', element: <MyFavoritesPage /> },
+        ],
+      },
       {
         element: <GuestOnly />,
         children: [

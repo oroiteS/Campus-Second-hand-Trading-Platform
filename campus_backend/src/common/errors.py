@@ -26,6 +26,7 @@ class ErrorCode(Enum):
     DEPENDENCY_UNAVAILABLE = (9004, 503, "依赖服务不可用，请稍后重试")
     INTERNAL_ERROR = (9005, 500, "服务开小差了，请稍后重试")
     RATE_LIMITED = (9006, 429, "请求过于频繁，请稍后重试")
+    METHOD_NOT_ALLOWED = (9007, 405, "请求方法不支持")
 
     # ---- 20xx 用户域（契约 0.2.0 批次 1 定义）----
     USERNAME_TAKEN = (2001, 409, "用户名已存在")
@@ -35,8 +36,12 @@ class ErrorCode(Enum):
     LOGIN_FAILED = (2005, 401, "用户名或密码错误")
     ACCOUNT_BANNED = (2006, 403, "账号已被封禁")
 
-    # ---- 30xx 商品域 / 40xx 交易域 / 50xx 聊天域 / 60xx 管理域 ----
-    # 段位已预留，具体错误码随批次 2–5 契约更新在此追加。
+    # ---- 30xx 商品域（契约 0.3.0 批次 2 定义）----
+    PRODUCT_STATUS_CONFLICT = (3001, 409, "商品状态不允许该操作")
+    PRODUCT_FORCED_OFF = (3002, 403, "商品已被管理员强制下架，无法重新上架；如有疑问请联系管理员")
+
+    # ---- 40xx 交易域 / 50xx 聊天域 / 60xx 管理域 ----
+    # 段位已预留，具体错误码随批次 3–5 契约更新在此追加。
 
     @property
     def code(self) -> int:
@@ -80,7 +85,7 @@ _HTTP_STATUS_MAP: dict[int, tuple[ErrorCode, str]] = {
     401: (ErrorCode.TOKEN_INVALID, "请先登录"),
     403: (ErrorCode.CAMPUS_VERIFICATION_REQUIRED, "无权访问该资源"),
     404: (ErrorCode.NOT_FOUND, "资源不存在"),
-    405: (ErrorCode.NOT_FOUND, "请求方法不支持"),
+    405: (ErrorCode.METHOD_NOT_ALLOWED, "请求方法不支持"),
     429: (ErrorCode.RATE_LIMITED, "请求过于频繁，请稍后重试"),
     500: (ErrorCode.INTERNAL_ERROR, "服务开小差了，请稍后重试"),
     503: (ErrorCode.DEPENDENCY_UNAVAILABLE, "依赖服务不可用，请稍后重试"),

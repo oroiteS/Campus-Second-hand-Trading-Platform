@@ -9,3 +9,8 @@ export function formatDateTime(iso: string): string {
 export function formatLatency(ms: number | null | undefined): string {
   return ms == null ? '—' : `${ms} ms`
 }
+
+/** 金额（元）：契约约定 number 保留两位小数展示 */
+export function formatPrice(value: number): string {
+  return `¥${value.toFixed(2)}`
+}

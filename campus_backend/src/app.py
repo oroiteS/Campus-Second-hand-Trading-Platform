@@ -5,11 +5,11 @@ import 顺序约定：``src.config``（其模块级 load_dotenv）必须先于
 DB_TABLE_PREFIX——下面的字母序 import 恰好满足，勿调整顺序。
 """
 
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, MethodNotAllowed
 
 from src.common import responses
 from src.common.auth import inject_scope, register_jwt_hooks
@@ -36,6 +36,17 @@ def create_app(config_object: object = None) -> Flask:
 
     register_routes(app)
     _register_error_handlers(app)
+    # b2be2：向量重试补偿线程（默认开；TESTING 跳过）
+    if app.config.get("VECTOR_RETRY_WORKER") and not app.config.get("TESTING"):
+        from src.services.vector_retry_worker import start_worker
+
+        start_worker(app)
+    # 启动任务（孤儿商品图清理等）：TESTING 跳过；失败仅日志、不阻断起服务
+    if not app.config.get("TESTING"):
+        from src.services.upload_service import run_startup_tasks
+
+        with app.app_context():
+            run_startup_tasks()
     return app
 
 
@@ -73,6 +84,12 @@ def _register_error_handlers(app: Flask) -> None:
         return responses.failure(
             err.error, message=err.message, data=err.data, status=err.http_status
         )
+
+    @app.errorhandler(MethodNotAllowed)
+    def handle_method_not_allowed(err: MethodNotAllowed):
+        # 契约 0.3.0：405 场景统一走 envelope，业务码 9007（b0 遗留清账）
+        app.logger.info("方法不支持 %s %s", request.method, request.path)
+        return responses.failure(ErrorCode.METHOD_NOT_ALLOWED, status=405)
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(err: HTTPException):

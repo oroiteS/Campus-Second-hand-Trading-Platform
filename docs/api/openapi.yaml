@@ -1893,6 +1893,8 @@ paths:
           （message 说明当前状态与允许的操作）；非本校 / 不存在 →
           `404 / 9002`（防探测）。
         - 重复收藏 → `409 / 9003`。
+        - 不能收藏自己发布的商品 → `409 / 9003`（message 说明不能收藏
+          自己发布的商品）。
         - **收藏关系写库必须成功**；画像更新允许失败重试（异步，需求
           「收藏与画像」节）。
       parameters:
@@ -1928,7 +1930,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: 重复收藏（code 9003）或商品状态不允许收藏（code 3001）。
+          description: 重复收藏 / 收藏自己发布的商品（code 9003）或商品状态不允许收藏（code 3001）。
           content:
             application/json:
               schema:
@@ -1939,6 +1941,12 @@ paths:
                   value:
                     code: 9003
                     message: 已收藏该商品
+                    data: null
+                own_product:
+                  summary: 收藏自己发布的商品
+                  value:
+                    code: 9003
+                    message: 不能收藏自己发布的商品
                     data: null
                 invalid_status:
                   summary: 商品非在售
