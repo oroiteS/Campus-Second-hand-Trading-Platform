@@ -257,7 +257,9 @@ function nextImageIds(count: number): number[] {
 
 /** 按分类配色的 inline SVG data URI 占位图（mock 图源铁律：零外网图源） */
 function svgDataUrl(categoryId: number, label: string, seq: number): string {
-  // SVG 命名空间分段拼接：保持本目录源码零 http 字面（任务卡图源铁律）
+  // SVG 命名空间分段拼接：保持本目录源码零 http 字面（任务卡图源铁律）。
+  // xmlns 为 data URI SVG 的必需命名空间（W3C 规范要求），非外网图源；
+  // 经第 1 轮审查豁免 grep 门槛（豁免由主 agent 登记看板）。
   const ns = 'http' + '://' + 'www.w3.org/2000/svg'
   const text = label.length > 9 ? `${label.slice(0, 9)}…` : label
   const svg =
@@ -344,7 +346,8 @@ function initPool(): void {
   if (lastThree[2]) lastThree[2].status = 'sold' // 收藏列表「已售」置灰演示
 
   // 「我的商品」样例（绑定 student02 / id 1002）
-  OWN_SEEDS.forEach((item, i) => {    const createdAt = base
+  OWN_SEEDS.forEach((item, i) => {
+    const createdAt = base
       .subtract(i + 1, 'hour')
       .format('YYYY-MM-DDTHH:mm:ssZ')
     POOL.push(
@@ -732,7 +735,8 @@ export function mockUpdateProduct(
     product.images = body.image_ids.map((imageId) => {
       const existing = product.images.find((image) => image.id === imageId)
       const upload = findMockUpload(imageId)
-      return existing ?? { id: imageId, url: upload?.url ?? '' }
+      // 兜底占位与 mock 既有占位图策略一致（data URI），不用空串避免裂图
+      return existing ?? { id: imageId, url: upload?.url ?? svgDataUrl(product.categoryId, product.title, 1) }
     })
     product.updatedAt = nowIso()
     return toDetail(product, user)

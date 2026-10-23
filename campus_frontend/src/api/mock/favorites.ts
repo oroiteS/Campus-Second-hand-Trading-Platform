@@ -59,11 +59,13 @@ export function mockFavoriteProduct(id: number): Promise<FavoriteActionData> {
 
 /**
  * DELETE /api/products/{id}/favorite：取消收藏（幂等，未收藏同样 200；
- * 商品非本校/不存在仍 404/9002）。已下架/已售条目仍可取消（收藏列表置灰条目出口）。
+ * 商品非本校/不存在仍 404/9002；管理员 → 9003，与收藏同口径）。
+ * 已下架/已售条目仍可取消（收藏列表置灰条目出口）。
  */
 export function mockUnfavoriteProduct(id: number): Promise<FavoriteActionData> {
   return delay(300).then(() => {
-    const user = requireVerifiedSession()
+    // 取消收藏与收藏同口径：仅学生可操作（管理员 → 9003）
+    const user = requireVerifiedStudentFor('取消收藏')
     const product = visibleProductForFavorite(id, user)
     if (!product) {
       throw new ApiError(9002, '商品不存在', null)

@@ -1,5 +1,6 @@
 import type { CategoryRef } from '../../types'
 import { delay } from '../../utils/delay'
+import { requireVerifiedSession } from './users'
 
 /**
  * GET /api/categories 契约同构 mock：全部启用分类，
@@ -17,5 +18,9 @@ export const MOCK_CATEGORIES: CategoryRef[] = [
 ]
 
 export function mockListCategories(): Promise<CategoryRef[]> {
-  return delay(250).then(() => MOCK_CATEGORIES.map((category) => ({ ...category })))
+  return delay(250).then(() => {
+    // 契约鉴权口径 verified（与商品域准入线一致）：未认证 → 403/1004 引导
+    requireVerifiedSession()
+    return MOCK_CATEGORIES.map((category) => ({ ...category }))
+  })
 }

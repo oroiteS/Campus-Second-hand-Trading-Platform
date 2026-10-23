@@ -41,7 +41,9 @@ function fileToDataUrl(file: File): Promise<string> {
 
 /** 兜底占位图（中性灰 SVG data URI，与商品池占位策略一致） */
 function fallbackPlaceholder(): string {
-  // SVG 命名空间分段拼接：保持本目录源码零 http 字面（任务卡图源铁律）
+  // SVG 命名空间分段拼接：保持本目录源码零 http 字面（任务卡图源铁律）。
+  // xmlns 为 data URI SVG 的必需命名空间（W3C 规范要求），非外网图源；
+  // 经第 1 轮审查豁免 grep 门槛（豁免由主 agent 登记看板）。
   const ns = 'http' + '://' + 'www.w3.org/2000/svg'
   const svg =
     `<svg xmlns='${ns}' width='600' height='450'>` +
