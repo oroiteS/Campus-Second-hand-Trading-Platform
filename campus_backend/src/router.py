@@ -11,6 +11,7 @@ from src.routes import (
     images,
     products,
     schools,
+    search,
     system,
     uploads,
     users,
@@ -31,6 +32,7 @@ def register_routes(app: Flask) -> None:
     app.register_blueprint(categories.bp, url_prefix="/api")
     app.register_blueprint(uploads.bp, url_prefix="/api")
     # b2be2: search.py / recommendations.py 注册位于其后
+    app.register_blueprint(search.bp, url_prefix="/api/products")
     # Swagger UI 蓝图自带 url_prefix=/api/docs（静态资源路由挂在其下）
     app.register_blueprint(create_swagger_ui_blueprint())
     # flask-swagger-ui 首页路由注册为 /api/docs/（尾斜杠）；契约路径是

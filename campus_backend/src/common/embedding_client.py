@@ -141,6 +141,11 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
+def active_model() -> str:
+    """当前生效的模型名（按 EMBEDDING_MODE 解析；Mongo 文档记录用）。"""
+    return _resolve_endpoint()[2]
+
+
 def is_available() -> tuple[bool, str]:
     """快速探测 embedding 端点可用性，``(ok, reason)`` 供降级判定。
 
