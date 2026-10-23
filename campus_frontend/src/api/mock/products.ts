@@ -14,6 +14,7 @@ import type {
   ProductSummary,
   SearchResultData,
   UserProfile,
+  UserSummary,
 } from '../../types'
 import { delay } from '../../utils/delay'
 import {
@@ -25,7 +26,12 @@ import { PRODUCT_STATUS_TEXT } from '../../utils/statusText'
 import { ApiError } from '../http'
 import { MOCK_CATEGORIES } from './categories'
 import { findMockUpload, isOwnedUpload } from './uploads'
-import { nowIso, requireVerifiedSession, toUserSummary } from './users'
+import {
+  MOCK_ACCOUNTS,
+  nowIso,
+  requireVerifiedSession,
+  toUserSummary,
+} from './users'
 
 /**
  * 商品域 mock（products tag 8 接口，契约 0.3.0 逐字段同构）。
@@ -62,32 +68,32 @@ const CATEGORY_COLORS: Record<number, string> = {
 
 /** 卖家池（approved 学生，UserSummary 同构；两条带信誉分供「暂无/有值」两态演示） */
 const MOCK_SELLERS: Record<number, UserProfile> = {
-  2001: {
-    id: 2001, username: 'seller01', student_no: '2024010201', email: 'xiaohong@example.edu.cn',
+  3001: {
+    id: 3001, username: 'seller01', student_no: '2024010201', email: 'xiaohong@example.edu.cn',
     nickname: '小红', display_name: '小红-示例大学(东校区)', phone: null, avatar: null,
     school: { id: 1, name: '示例大学', multi_campus: true },
     campus: { id: 1, school_id: 1, name: '东校区' },
     role: 'student', auth_status: 'approved', status: 'active', credit_score: null,
     created_at: '2026-09-02T09:00:00+08:00',
   },
-  2002: {
-    id: 2002, username: 'seller02', student_no: '2024010202', email: 'xiaogang@example.edu.cn',
+  3002: {
+    id: 3002, username: 'seller02', student_no: '2024010202', email: 'xiaogang@example.edu.cn',
     nickname: '小刚', display_name: '小刚-示例大学(西校区)', phone: null, avatar: null,
     school: { id: 1, name: '示例大学', multi_campus: true },
     campus: { id: 2, school_id: 1, name: '西校区' },
     role: 'student', auth_status: 'approved', status: 'active', credit_score: 4.5,
     created_at: '2026-09-02T09:10:00+08:00',
   },
-  2003: {
-    id: 2003, username: 'seller03', student_no: '2024010203', email: 'xiaoli@example.edu.cn',
+  3003: {
+    id: 3003, username: 'seller03', student_no: '2024010203', email: 'xiaoli@example.edu.cn',
     nickname: '小丽', display_name: '小丽-示例大学(东校区)', phone: null, avatar: null,
     school: { id: 1, name: '示例大学', multi_campus: true },
     campus: { id: 1, school_id: 1, name: '东校区' },
     role: 'student', auth_status: 'approved', status: 'active', credit_score: null,
     created_at: '2026-09-02T09:20:00+08:00',
   },
-  2004: {
-    id: 2004, username: 'seller04', student_no: '2024010204', email: 'xiaoqiang@example.edu.cn',
+  3004: {
+    id: 3004, username: 'seller04', student_no: '2024010204', email: 'xiaoqiang@example.edu.cn',
     nickname: '小强', display_name: '小强-示例大学(西校区)', phone: null, avatar: null,
     school: { id: 1, name: '示例大学', multi_campus: true },
     campus: { id: 2, school_id: 1, name: '西校区' },
@@ -320,7 +326,7 @@ function initPool(): void {
           ...item,
           categoryId: group.categoryId,
           campusId: index % 2 === 0 ? 1 : 2,
-          sellerId: 2001 + (index % 4),
+          sellerId: 3001 + (index % 4),
           createdAt,
           imageCount: 1 + (index % 3),
           favoriteCount: (index * 7) % 9,
@@ -492,10 +498,29 @@ function validateProductInput(
 
 // ---- 响应组装（逐字段映射契约形态，剥离内部字段） ----
 
+/** 卖家解析：静态卖家池 → mock 账号仓库（自建商品/我的商品样例）→ 兜底占位 */
+function sellerOf(product: MockProduct): UserSummary {
+  const staticSeller = MOCK_SELLERS[product.sellerId]
+  if (staticSeller) {
+    return toUserSummary(staticSeller)
+  }
+  const account = MOCK_ACCOUNTS.find((item) => item.profile.id === product.sellerId)
+  if (account) {
+    return toUserSummary(account.profile)
+  }
+  return {
+    id: product.sellerId,
+    display_name: `用户 ${product.sellerId}`,
+    nickname: `用户 ${product.sellerId}`,
+    credit_score: null,
+    auth_status: 'approved',
+    role: 'student',
+  }
+}
+
 function toSummary(product: MockProduct): ProductSummary {
   const category = categoryById(product.categoryId)
   const campus = MOCK_CAMPUSES.find((c) => c.id === product.campusId)
-  const sellerProfile = MOCK_SELLERS[product.sellerId]
   return {
     id: product.id,
     title: product.title,
@@ -506,9 +531,7 @@ function toSummary(product: MockProduct): ProductSummary {
     ...(product.images[0] ? { cover: { ...product.images[0] } } : { cover: null }),
     favorite_count: product.favoriteCount,
     ...(category ? { category: { ...category } } : { category: null }),
-    seller: sellerProfile
-      ? toUserSummary(sellerProfile)
-      : { id: product.sellerId, display_name: '示例卖家', nickname: '示例卖家', credit_score: null, auth_status: 'approved', role: 'student' },
+    seller: sellerOf(product),
     ...(campus ? { campus: { ...campus } } : { campus: null }),
     created_at: product.createdAt,
   }
