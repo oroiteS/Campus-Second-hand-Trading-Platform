@@ -226,3 +226,14 @@ export function validateSearchQ(value: string): string | null {
   }
   return null
 }
+
+/** 列表关键词（可空）：0–100 字符，LIKE 标题匹配（契约 GET /api/products keyword） */
+export function validateKeywordOptional(value: string): string | null {
+  if (value.trim() === '') {
+    return null
+  }
+  if (value.length > 100) {
+    return '关键词长度不得超过 100 个字符'
+  }
+  return null
+}

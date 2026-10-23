@@ -16,6 +16,7 @@ import { useQueryList } from '../../hooks/useQueryList'
 import { useAuthPhase } from '../../stores/authStore'
 import type { Paginated, ProductCondition, ProductSummary } from '../../types'
 import {
+  validateKeywordOptional,
   validatePriceFilter,
   validatePriceRange,
 } from '../../utils/validators'
@@ -48,11 +49,16 @@ function parseSort(value: string | null): SortValue {
   return SORTS.find((item) => item === value) ?? 'newest'
 }
 
-/** 批量更新 URL query（空值删除；筛选/排序变更时重置页码） */
+/**
+ * 批量更新 URL query（空值删除；筛选/排序变更时重置页码）。
+ * replace：逐字符输入（价格/关键词）过程中为 true，避免每个字符压入一条历史记录；
+ * 离散变更（下拉/排序/翻页/提交语义）保持 false，回退可还原上一筛选态。
+ */
 function applyParamPatch(
   navigate: NavigateFunction,
   current: URLSearchParams,
   patch: Record<string, string | null>,
+  options?: { replace?: boolean },
 ): void {
   const next = new URLSearchParams(current)
   for (const [key, value] of Object.entries(patch)) {
@@ -62,7 +68,7 @@ function applyParamPatch(
       next.set(key, value)
     }
   }
-  navigate(`?${next.toString()}`, { replace: false })
+  navigate(`?${next.toString()}`, { replace: options?.replace === true })
 }
 
 /**
@@ -104,6 +110,7 @@ function ProductList({ searchParams, navigate }: ProductListProps) {
   const priceMin = searchParams.get('price_min') ?? ''
   const priceMax = searchParams.get('price_max') ?? ''
   const sort = parseSort(searchParams.get('sort'))
+  const keyword = searchParams.get('keyword') ?? ''
   const page = parsePositiveInt(searchParams.get('page')) ?? 1
 
   // 价格区间预检（3.0 对照表同源）：非法输入拦截后不发请求
@@ -117,23 +124,32 @@ function ProductList({ searchParams, navigate }: ProductListProps) {
   )
   const priceInvalid = Boolean(priceErrors.min || priceErrors.max || priceErrors.range)
 
+  // 关键词预检（契约 keyword ≤100 可空）：URL 直链超长同样拦截不发请求
+  const keywordError = useMemo(
+    () => validateKeywordOptional(keyword) ?? undefined,
+    [keyword],
+  )
+  const blocked = priceInvalid || keywordError != null
+
   const fetchPage = useCallback((): Promise<Paginated<ProductSummary>> => {
     const min = priceMin.trim() === '' ? undefined : Number(priceMin)
     const max = priceMax.trim() === '' ? undefined : Number(priceMax)
+    const kw = keyword.trim()
     return listProducts({
       ...(categoryId != null ? { category_id: categoryId } : {}),
       ...(condition != null ? { condition } : {}),
       ...(min != null ? { price_min: min } : {}),
       ...(max != null ? { price_max: max } : {}),
+      ...(kw !== '' ? { keyword: kw } : {}),
       sort,
       page,
       page_size: PAGE_SIZE,
     })
-  }, [categoryId, condition, priceMin, priceMax, sort, page])
+  }, [categoryId, condition, priceMin, priceMax, keyword, sort, page])
 
-  const { data, loading, error, retry } = useQueryList(fetchPage, !priceInvalid)
+  const { data, loading, error, retry } = useQueryList(fetchPage, !blocked)
 
-  const filterValues: FilterValues = { categoryId, condition, priceMin, priceMax }
+  const filterValues: FilterValues = { categoryId, condition, priceMin, priceMax, keyword }
 
   function handleFilterChange(patch: Partial<FilterValues>): void {
     const next: Record<string, string | null> = { page: null }
@@ -149,7 +165,13 @@ function ProductList({ searchParams, navigate }: ProductListProps) {
     if ('priceMax' in patch) {
       next.price_max = patch.priceMax?.trim() || null
     }
-    applyParamPatch(navigate, searchParams, next)
+    if ('keyword' in patch) {
+      next.keyword = patch.keyword?.trim() || null
+    }
+    // 逐字符输入（价格/关键词）过程 replace:true 防历史记录爆炸；离散变更保留回退语义
+    const typing =
+      'priceMin' in patch || 'priceMax' in patch || 'keyword' in patch
+    applyParamPatch(navigate, searchParams, next, { replace: typing })
   }
 
   function handleSortChange(value: SortValue): void {
@@ -162,7 +184,7 @@ function ProductList({ searchParams, navigate }: ProductListProps) {
 
   return (
     <div className="page-container">
-      <PageHeader title="商品列表" description="本校在售商品，支持分类 / 成色 / 价格筛选" />
+      <PageHeader title="商品列表" description="本校在售商品，支持关键词 / 分类 / 成色 / 价格筛选" />
 
       <FilterBar
         idPrefix="product-list"
@@ -171,11 +193,13 @@ function ProductList({ searchParams, navigate }: ProductListProps) {
         sort={sort}
         onSortChange={handleSortChange}
         priceErrors={priceErrors}
+        keywordError={keywordError}
+        showKeyword
       />
 
-      {priceInvalid ? (
+      {blocked ? (
         <p className="form-field__error product-list__blocked" role="alert">
-          请先修正价格区间的错误后再查询
+          {keywordError ?? '请先修正价格区间的错误后再查询'}
         </p>
       ) : (
         <StateView

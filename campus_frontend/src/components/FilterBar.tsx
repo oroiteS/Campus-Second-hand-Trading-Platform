@@ -5,12 +5,14 @@ import type { ProductCondition, ProductListQuery } from '../types'
 import { CONDITION_TEXT } from '../utils/statusText'
 import './FilterBar.css'
 
-/** 筛选值（列表/搜索共用；价格以字符串暂存，提交前由 validators 预检） */
+/** 筛选值（列表/搜索共用；价格以字符串暂存，提交前由 validators 预检；
+ * keyword 仅列表页消费（契约 GET /api/products，搜索页走 q） */
 export interface FilterValues {
   categoryId: number | null
   condition: ProductCondition | null
   priceMin: string
   priceMax: string
+  keyword?: string
 }
 
 export type SortValue = NonNullable<ProductListQuery['sort']>
@@ -40,13 +42,18 @@ interface FilterBarProps {
   onSortChange?: (sort: SortValue) => void
   /** 价格区间预检错误（页面侧 validators 产出，内联展示） */
   priceErrors?: FilterPriceErrors
+  /** 关键词预检错误（页面侧 validators 产出，内联展示；随 showKeyword 出现） */
+  keywordError?: string
+  /** 是否渲染关键词输入（列表页专用：搜索页有自己的 q 输入框，契约无 keyword 参数） */
+  showKeyword?: boolean
   /** id 前缀：列表/搜索两页共用组件时保证表单控件 id 唯一 */
   idPrefix: string
 }
 
 /**
  * 列表/搜索共用筛选条：分类下拉（listCategories 缓存于组件级 state）、
- * 成色 5 档、价格区间双输入、排序（列表专用）。
+ * 成色 5 档、价格区间双输入、关键词（列表专用，showKeyword 开启）、
+ * 排序（列表专用）。
  * 受控组件，变更即回调；预检错误由页面传入内联展示（role="alert"）。
  */
 export function FilterBar({
@@ -55,6 +62,8 @@ export function FilterBar({
   sort,
   onSortChange,
   priceErrors = {},
+  keywordError,
+  showKeyword = false,
   idPrefix,
 }: FilterBarProps) {
   const categories = useAsyncData(listCategories)
@@ -65,6 +74,29 @@ export function FilterBar({
 
   return (
     <div className="filter-bar">
+      {showKeyword && (
+        <div className="filter-bar__field">
+          <label htmlFor={`${idPrefix}-keyword`} className="filter-bar__label">
+            关键词
+          </label>
+          <Input
+            id={`${idPrefix}-keyword`}
+            allowClear
+            placeholder="标题关键词，如：键盘"
+            value={values.keyword ?? ''}
+            onChange={(e) => onChange({ keyword: e.target.value })}
+            aria-invalid={keywordError ? true : undefined}
+            aria-describedby={keywordError ? `${idPrefix}-keyword-error` : undefined}
+            status={keywordError ? 'error' : undefined}
+          />
+          {keywordError && (
+            <p id={`${idPrefix}-keyword-error`} className="form-field__error" role="alert">
+              {keywordError}
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="filter-bar__field">
         <label htmlFor={`${idPrefix}-category`} className="filter-bar__label">
           分类
