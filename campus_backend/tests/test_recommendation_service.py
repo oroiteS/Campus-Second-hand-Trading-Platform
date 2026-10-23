@@ -279,6 +279,9 @@ class TestDegraded:
         assert data["degraded"] is True
         assert data["degraded_reason"]
         assert len(data["items"]) == 40  # 全随机
+        # P1 修复③回归守卫：降级全随机同样排除自家商品
+        own_ids = {p.id for p in world.own}
+        assert own_ids.isdisjoint({i["id"] for i in data["items"]})
 
     def test_embedding_down_random_with_degraded(
         self, app, client, world, fake_mongo, fake_chroma, fake_embedding, make_auth_header
@@ -289,6 +292,9 @@ class TestDegraded:
         data = res.get_json()["data"]
         assert data["degraded"] is True
         assert len(data["items"]) == 40
+        # P1 修复③回归守卫：降级全随机同样排除自家商品
+        own_ids = {p.id for p in world.own}
+        assert own_ids.isdisjoint({i["id"] for i in data["items"]})
 
     def test_redis_down_direct_compute_not_degraded(
         self, app, client, world, fake_mongo, fake_chroma, fake_embedding, fake_redis,
