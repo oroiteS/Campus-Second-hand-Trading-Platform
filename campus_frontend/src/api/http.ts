@@ -51,6 +51,27 @@ export function handleTokenInvalid(): void {
   }
 }
 
+/** 需校园认证的页面（1004 引导目标；自身不再触发引导，防循环跳转） */
+const CERTIFICATION_PATH = '/certification'
+
+/**
+ * 1004（未通过校园认证）统一引导（b2）：当前路由为游客页或认证页本身时不跳转
+ * （认证页自身不触发，任务卡铁律）；否则整页引导至 /certification 并携带 from
+ * 回跳参数。与 401 引导共用「游客页不跳转」的防循环逻辑。
+ * 页面内 RequireVerified 守卫为主拦截，本引导兜底「守卫放行后令牌态变化」的
+ * 时序缝隙（http 拦截器与 mock 商品域准入共用）。
+ */
+export function handleCertificationRequired(): void {
+  const pathname = window.location.pathname
+  if (isGuestPath(pathname) || pathname === CERTIFICATION_PATH) {
+    return
+  }
+  const from = `${pathname}${window.location.search}`
+  window.location.assign(
+    `${CERTIFICATION_PATH}?from=${encodeURIComponent(from)}`,
+  )
+}
+
 export const http = axios.create({
   baseURL: API_BASE,
   timeout: 10_000,
@@ -88,8 +109,10 @@ http.interceptors.response.use(
           if (isTokenInvalidCode(body.code)) {
             handleTokenInvalid()
           }
-          // 1004（未通过校园认证）保留语义位：商品域（b2）启用，
-          // 本批次用户域接口不出现该码，此处不做引导
+          // 1004（未通过校园认证）：非游客页/非认证页时统一引导认证页（防循环）
+          if (body.code === 1004) {
+            handleCertificationRequired()
+          }
           return Promise.reject(new ApiError(body.code, body.message, body.data ?? null))
         }
         return Promise.reject(

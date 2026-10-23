@@ -9,7 +9,7 @@ import {
   validatePhoneOptional,
   validateUploadFile,
 } from '../../utils/validators'
-import { ApiError, handleTokenInvalid } from '../http'
+import { ApiError, handleCertificationRequired, handleTokenInvalid } from '../http'
 
 /**
  * mock 会话：内存态的「当前登录用户」。
@@ -84,11 +84,13 @@ export function requireMockCurrentUser(): UserProfile {
 
 /**
  * 商品域准入（契约 403/1004，AC-02 最硬准入线）：会话用户须已通过校园认证
- * （approved；管理员按契约总则恒 approved）。未认证 → 抛 1004 供页面反馈。
+ * （approved；管理员按契约总则恒 approved）。未认证 → 统一引导认证页
+ * （与 http 拦截器同源，防循环：游客页/认证页本身不触发）并抛 1004 供页面反馈。
  */
 export function requireVerifiedSession(): UserProfile {
   const user = requireSession()
   if (user.auth_status !== 'approved') {
+    handleCertificationRequired()
     throw new ApiError(1004, '请先完成校园认证', null)
   }
   return user
