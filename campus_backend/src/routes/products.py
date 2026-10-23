@@ -73,3 +73,34 @@ def my_products():
 def product_detail(product_id: int):
     """GET /api/products/{id} —— 详情（可见性矩阵；防探测 404/9002）。"""
     return responses.success(product_service.get_detail(g.current_user, product_id))
+
+
+@bp.put("/<int:product_id>")
+@verified_required
+def update_product(product_id: int):
+    """PUT /api/products/{id} —— 编辑（全量替换；管理员 9003）。"""
+    product = product_service.update(g.current_user, product_id, _json_payload())
+    return responses.success(product_service.detail_payload(product, g.current_user))
+
+
+@bp.patch("/<int:product_id>/status")
+@verified_required
+def update_product_status(product_id: int):
+    """PATCH /api/products/{id}/status —— 上下架（返回 ProductSummary）。"""
+    payload = _json_payload()
+    status = payload.get("status")
+    if status not in ("on_sale", "off_sale"):
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            data={"fields": {"status": "目标状态必须为 on_sale 或 off_sale"}},
+        )
+    product = product_service.change_status(g.current_user, product_id, status)
+    return responses.success(product.to_summary_dict())
+
+
+@bp.delete("/<int:product_id>")
+@verified_required
+def delete_product(product_id: int):
+    """DELETE /api/products/{id} —— 软删（data 为 null）。"""
+    product_service.delete(g.current_user, product_id)
+    return responses.success(None)

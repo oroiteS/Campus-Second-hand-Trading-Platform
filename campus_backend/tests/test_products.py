@@ -9,6 +9,19 @@ from src.model import Category, db
 
 PRODUCTS_URL = "/api/products"
 
+_STATUS_LABELS = {
+    "on_sale": "上架",
+    "trading": "交易中",
+    "sold": "已售",
+    "off_sale": "已下架",
+    "deleted": "已删除",
+}
+
+
+def status_label(status: str) -> str:
+    """3001 message 中的状态中文标签断言用。"""
+    return _STATUS_LABELS[status]
+
 
 def _verified(user_factory, school, campus=None, **overrides) -> dict:
     return user_factory(
@@ -878,3 +891,308 @@ class TestB2be2HelperFunctions:
             assert product_service.get_active_by_id(on_sale.id).id == on_sale.id
             assert product_service.get_active_by_id(deleted.id) is None
             assert product_service.get_active_by_id(424242) is None
+
+
+# ============================================================
+# 商品域测试（二）：编辑 / 上下架 / 删除（事件与缓存失效断言见
+# test_product_events.py，此处覆盖状态机矩阵与响应形态）
+# ============================================================
+
+
+class TestUpdateProduct:
+    def _setup(self, school_fixtures, user_factory, category_fixtures, product_factory, **kw):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id, **kw)
+        image_ids = [pi.image_id for pi in product.product_images]
+        return seller, product, image_ids
+
+    def test_update_full_replacement(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, owned_product_images, make_auth_header,
+    ):
+        """全量替换：字段更新 + image_ids 重写（数组序=排序）。"""
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory
+        )
+        new_images = owned_product_images(seller["id"], 2)
+        payload = _payload(
+            category_fixtures.by_name["图书教材"].id,
+            new_images,
+            title="降价急出",
+            description="新描述",
+            price=179.5,
+            condition="good",
+        )
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json=payload,
+        )
+        assert res.status_code == 200
+        data = res.get_json()["data"]
+        assert data["title"] == "降价急出"
+        assert data["price"] == 179.5
+        assert data["category"]["name"] == "图书教材"
+        assert [img["id"] for img in data["images"]] == new_images
+        assert data["cover"]["id"] == new_images[0]
+
+    def test_update_off_sale_keeps_status(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, owned_product_images, make_auth_header,
+    ):
+        """off_sale 可编辑，编辑后仍 off_sale。"""
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory,
+            status="off_sale",
+        )
+        new_images = owned_product_images(seller["id"], 1)
+        payload = _payload(category_fixtures.items[0].id, new_images, title="下架中编辑")
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json=payload,
+        )
+        assert res.status_code == 200
+        assert res.get_json()["data"]["status"] == "off_sale"
+
+    @pytest.mark.parametrize("status", ["trading", "sold"])
+    def test_update_trading_sold_3001(
+        self, status, client, db_create_all, school_fixtures, user_factory,
+        category_fixtures, product_factory, owned_product_images, make_auth_header,
+    ):
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory, status=status
+        )
+        new_images = owned_product_images(seller["id"], 1)
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json=_payload(category_fixtures.items[0].id, new_images),
+        )
+        body = res.get_json()
+        assert (res.status_code, body["code"]) == (409, 3001)
+        assert status_label(status) in body["message"]
+
+    def test_update_deleted_404(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, owned_product_images, make_auth_header,
+    ):
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory,
+            status="deleted",
+        )
+        new_images = owned_product_images(seller["id"], 1)
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json=_payload(category_fixtures.items[0].id, new_images),
+        )
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+
+    def test_update_not_owner_404(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, owned_product_images, make_auth_header,
+    ):
+        """同校他人商品 → 404/9002（与不存在同语义，防探测）。"""
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory
+        )
+        stranger = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        stranger_images = owned_product_images(stranger["id"], 1)
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(stranger["id"]),
+            json=_payload(category_fixtures.items[0].id, stranger_images),
+        )
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+
+    def test_update_other_school_404(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, owned_product_images, make_auth_header,
+    ):
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory
+        )
+        outsider = _verified(
+            user_factory, school_fixtures.single, school_fixtures.main_campus
+        )
+        outsider_images = owned_product_images(outsider["id"], 1)
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(outsider["id"]),
+            json=_payload(category_fixtures.items[0].id, outsider_images),
+        )
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+
+    def test_update_admin_9003(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, owned_product_images, make_auth_header,
+    ):
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory
+        )
+        admin = user_factory(role="admin")
+        admin_images = owned_product_images(admin["id"], 1)
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(admin["id"]),
+            json=_payload(category_fixtures.items[0].id, admin_images),
+        )
+        assert (res.status_code, res.get_json()["code"]) == (409, 9003)
+
+    def test_update_invalid_fields_9001(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """编辑路径同样独立复验字段（不信任客户端）。"""
+        seller, product, _old = self._setup(
+            school_fixtures, user_factory, category_fixtures, product_factory
+        )
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json={"title": "x", "description": "y", "price": 0,
+                  "category_id": product.category_id, "condition": "good",
+                  "image_ids": []},
+        )
+        assert (res.status_code, res.get_json()["code"]) == (422, 9001)
+
+
+class TestChangeStatus:
+    def _patch(self, client, headers, product_id, status):
+        return client.patch(
+            f"{PRODUCTS_URL}/{product_id}/status", headers=headers, json={"status": status}
+        )
+
+    def test_on_sale_to_off_sale_and_back(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        headers = make_auth_header(seller["id"])
+        res = self._patch(client, headers, product.id, "off_sale")
+        assert res.status_code == 200
+        assert res.get_json()["data"]["status"] == "off_sale"
+        # ProductSummary 形态（无 description/images 等 detail 字段）
+        assert "description" not in res.get_json()["data"]
+        res = self._patch(client, headers, product.id, "on_sale")
+        assert res.get_json()["data"]["status"] == "on_sale"
+
+    def test_same_status_idempotent_200(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        res = self._patch(client, make_auth_header(seller["id"]), product.id, "on_sale")
+        assert res.status_code == 200
+        assert res.get_json()["data"]["status"] == "on_sale"
+
+    def test_forced_off_reshelve_3002(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """off_sale + forced_off → 重新上架 3002（仅管理员可恢复，b5 写入标记）。"""
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(
+            seller, category_fixtures.items[0].id, status="off_sale", forced_off=True
+        )
+        res = self._patch(client, make_auth_header(seller["id"]), product.id, "on_sale")
+        body = res.get_json()
+        assert (res.status_code, body["code"]) == (403, 3002)
+
+    @pytest.mark.parametrize("status", ["trading", "sold"])
+    def test_trading_sold_3001(
+        self, status, client, db_create_all, school_fixtures, user_factory,
+        category_fixtures, product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id, status=status)
+        res = self._patch(client, make_auth_header(seller["id"]), product.id, "off_sale")
+        body = res.get_json()
+        assert (res.status_code, body["code"]) == (409, 3001)
+
+    def test_invalid_target_status_9001(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        res = self._patch(client, make_auth_header(seller["id"]), product.id, "sold")
+        assert (res.status_code, res.get_json()["code"]) == (422, 9001)
+
+    def test_not_owner_or_nonexistent_404(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        stranger = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        res = self._patch(client, make_auth_header(stranger["id"]), product.id, "off_sale")
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+        res = self._patch(client, make_auth_header(seller["id"]), 424242, "off_sale")
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+
+
+class TestDeleteProduct:
+    def test_delete_on_sale_200_then_invisible(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        headers = make_auth_header(seller["id"])
+        res = client.delete(f"{PRODUCTS_URL}/{product.id}", headers=headers)
+        assert res.status_code == 200
+        assert res.get_json()["data"] is None
+        # 详情 404；mine 缺省不可见
+        assert client.get(f"{PRODUCTS_URL}/{product.id}", headers=headers).status_code == 404
+        mine = client.get(f"{PRODUCTS_URL}/mine", headers=headers).get_json()["data"]
+        assert product.id not in {i["id"] for i in mine["items"]}
+
+    def test_delete_off_sale_200(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id, status="off_sale")
+        res = client.delete(
+            f"{PRODUCTS_URL}/{product.id}", headers=make_auth_header(seller["id"])
+        )
+        assert res.status_code == 200
+
+    @pytest.mark.parametrize("status", ["trading", "sold"])
+    def test_delete_trading_sold_3001(
+        self, status, client, db_create_all, school_fixtures, user_factory,
+        category_fixtures, product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id, status=status)
+        res = client.delete(
+            f"{PRODUCTS_URL}/{product.id}", headers=make_auth_header(seller["id"])
+        )
+        assert (res.status_code, res.get_json()["code"]) == (409, 3001)
+
+    def test_delete_already_deleted_404(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id, status="deleted")
+        res = client.delete(
+            f"{PRODUCTS_URL}/{product.id}", headers=make_auth_header(seller["id"])
+        )
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+
+    def test_delete_not_owner_404(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id)
+        stranger = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        res = client.delete(
+            f"{PRODUCTS_URL}/{product.id}", headers=make_auth_header(stranger["id"])
+        )
+        assert (res.status_code, res.get_json()["code"]) == (404, 9002)

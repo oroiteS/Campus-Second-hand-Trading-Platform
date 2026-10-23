@@ -467,6 +467,139 @@ def mine(user: User, status: str | None, page: int, page_size: int) -> dict:
     return _paginate(query, page, page_size, _SUMMARY_LOADS)
 
 
+# ---- 编辑 / 上下架 / 删除 ----
+
+# 可编辑状态：off_sale 编辑后仍 off_sale；trading/sold → 3001；deleted → 404
+_EDITABLE_STATUSES = ("on_sale", "off_sale")
+# 可删除状态：软删，图片与收藏记录保留（不可见，YAGNI）
+_DELETABLE_STATUSES = ("on_sale", "off_sale")
+
+
+def _own_product_or_404(user: User, product_id: int) -> Product:
+    """本人本校商品，否则 404/9002（非本人/他校/不存在不区分，防探测）。
+
+    仅编辑/上下架/删除调用；管理员在此口径下恒非本人（admin 无交易能力，
+    不可发布即无自有商品）。
+    """
+    product = db.session.get(Product, product_id)
+    if (
+        product is None
+        or product.seller_id != user.id
+        or product.school_id != user.school_id
+    ):
+        raise _product_not_found()
+    return product
+
+
+def update(user: User, product_id: int, payload: dict) -> Product:
+    """编辑：全量替换（含 image_ids 重写）→ emit UPDATED(product, changed)。
+
+    ``changed`` 为实际变化字段名集合（比对请求与原值；image_ids 变化不进
+    集合——向量订阅方不关心图片）。失效 detail 缓存。
+    """
+    if user.role == "admin":
+        raise _admin_rejected("编辑商品")
+    product = _own_product_or_404(user, product_id)
+    if product.status == "deleted":
+        raise _product_not_found()
+    if product.status not in _EDITABLE_STATUSES:
+        raise ApiError(
+            ErrorCode.PRODUCT_STATUS_CONFLICT,
+            message=(
+                f"商品当前状态为{_STATUS_LABELS[product.status]}，不允许编辑；"
+                "仅上架或已下架商品可编辑"
+            ),
+        )
+    normalized = _validate_product_payload(user, payload)
+
+    # changed 集合：比对请求与原值（Decimal 与 int 均按值比较）
+    changed: set[str] = set()
+    if product.title != normalized["title"]:
+        changed.add("title")
+    if product.description != normalized["description"]:
+        changed.add("description")
+    if product.price != normalized["price"]:
+        changed.add("price")
+    if product.original_price != normalized["original_price"]:
+        changed.add("original_price")
+    if product.category_id != normalized["category_id"]:
+        changed.add("category_id")
+    if product.condition != normalized["condition"]:
+        changed.add("condition")
+    if product.campus_id != normalized["campus_id"]:
+        changed.add("campus_id")
+
+    product.title = normalized["title"]
+    product.description = normalized["description"]
+    product.price = normalized["price"]
+    product.original_price = normalized["original_price"]
+    product.category_id = normalized["category_id"]
+    product.condition = normalized["condition"]
+    product.campus_id = normalized["campus_id"]
+    # image_ids 全量替换（数组序=排序）；delete-orphan 清理旧关联
+    product.product_images = [
+        ProductImage(image_id=image_id, sort_order=i)
+        for i, image_id in enumerate(normalized["image_ids"])
+    ]
+    db.session.commit()
+    invalidate_detail_cache(product)
+    events.emit(events.PRODUCT_UPDATED, product, changed)
+    return product
+
+
+def change_status(user: User, product_id: int, new_status: str) -> Product:
+    """上下架：仅本人；非法流转 3001；forced_off 重上架 3002。
+
+    目标态与当前态相同视为幂等成功（无状态变化则不 emit、不失效缓存）。
+    """
+    if new_status not in ("on_sale", "off_sale"):
+        raise _fields_error({"status": "目标状态必须为 on_sale 或 off_sale"})
+    product = _own_product_or_404(user, product_id)
+    if product.status == "deleted":
+        raise _product_not_found()
+    if product.status not in _EDITABLE_STATUSES:
+        raise ApiError(
+            ErrorCode.PRODUCT_STATUS_CONFLICT,
+            message=(
+                f"商品当前状态为{_STATUS_LABELS[product.status]}，"
+                "仅上架或已下架商品可执行上下架"
+            ),
+        )
+    if new_status == "on_sale" and product.forced_off:
+        raise ApiError(
+            ErrorCode.PRODUCT_FORCED_OFF,
+            message="商品已被管理员强制下架，无法重新上架；如有疑问请联系管理员",
+        )
+    if product.status == new_status:
+        return product  # 幂等：已是目标状态
+    old_status = product.status
+    product.status = new_status
+    db.session.commit()
+    invalidate_detail_cache(product)
+    events.emit(events.PRODUCT_STATUS_CHANGED, product, old_status)
+    return product
+
+
+def delete(user: User, product_id: int) -> None:
+    """软删：status=deleted，图片与收藏记录保留（不可见）；emit DELETED(id)。"""
+    product = _own_product_or_404(user, product_id)
+    if product.status == "deleted":
+        raise _product_not_found()
+    if product.status not in _DELETABLE_STATUSES:
+        raise ApiError(
+            ErrorCode.PRODUCT_STATUS_CONFLICT,
+            message=(
+                f"商品当前状态为{_STATUS_LABELS[product.status]}，不允许删除；"
+                "仅上架或已下架商品可删除"
+            ),
+        )
+    product.status = "deleted"
+    db.session.commit()
+    invalidate_detail_cache(product)
+    # emit 载荷只有 product_id（Interfaces 节）
+    events.emit(events.PRODUCT_DELETED, product.id)
+
+
 # ---- b2be2 接口（Interfaces 节钉死签名；显式 scope 参数，不读 g）----
 
 
