@@ -1,6 +1,6 @@
 import { Alert, Button, Input, Select, Tag } from 'antd'
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { submitApplication } from '../../api/certification'
 import { USE_MOCK } from '../../api/config'
 import { getMyApplications } from '../../api/certification'
@@ -43,11 +43,20 @@ const STATUS_TAG_COLOR = {
 export function CertificationPage() {
   const user = useAuthStore((s) => s.user)
   const setUser = useAuthStore((s) => s.setUser)
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const schools = useAsyncData(listSchools)
   const applications = useAsyncData(getMyApplications)
 
   const [submitNotice, setSubmitNotice] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
+
+  // 消费 1004 统一引导（http.ts handleCertificationRequired）写入的 ?from= 回跳参数：
+  // 引导走 window.location.assign 整页跳转、无法携带 location.state，故此处按 query
+  // 口径消费（改动最小）；仅接受站内路径防外链，且认证页自身不触发 1004 引导，无循环跳转。
+  const rawFrom = searchParams.get('from')
+  const fromPath =
+    rawFrom != null && rawFrom.startsWith('/') && !rawFrom.startsWith('//') ? rawFrom : null
 
   // 页面入口守卫（与路由层 RequireAuth 双层拦截）
   if (!user) {
@@ -105,6 +114,13 @@ export function CertificationPage() {
             showIcon
             message="已通过校园认证"
             description="你可以使用商品发布、浏览与交易等全部学生功能。"
+            action={
+              fromPath ? (
+                <Button size="small" onClick={() => navigate(fromPath)}>
+                  返回原页面
+                </Button>
+              ) : undefined
+            }
           />
         )}
 
