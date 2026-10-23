@@ -3,6 +3,7 @@
 import pytest
 
 from src.services import events, events_subscribers, vector_service
+from tests.conftest import TestConfig
 
 
 @pytest.fixture()
@@ -112,3 +113,30 @@ class TestIdempotent:
         fake_mongo.fail = True
         with app.app_context():
             events_subscribers.ensure_indexes()  # 不上抛（启动容错）
+
+
+class TestCreateAppWiring:
+    def test_create_app_registers_subscribers_and_indexes(self, fake_mongo):
+        """B-1 回归：create_app 执行期（无请求上下文）register_all 真实执行。
+
+        router 以 ``app.app_context()`` 包裹接线，索引建立调用不被
+        「Working outside of application context」容错分支吞掉。
+        """
+        from src.app import create_app
+
+        events_subscribers._reset_for_tests()
+        try:
+            create_app(TestConfig)
+            assert set(events._HANDLERS) == {
+                events.PRODUCT_PUBLISHED,
+                events.PRODUCT_UPDATED,
+                events.PRODUCT_DELETED,
+                events.PRODUCT_STATUS_CHANGED,
+                events.PRODUCT_VIEWED,
+                events.FAVORITE_CHANGED,
+            }
+            assert fake_mongo["user_profiles"].indexes
+            assert fake_mongo["product_vectors"].indexes
+            assert fake_mongo["user_behaviors"].indexes
+        finally:
+            events_subscribers._reset_for_tests()

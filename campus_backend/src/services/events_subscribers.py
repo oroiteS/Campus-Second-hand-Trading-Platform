@@ -1,7 +1,8 @@
 """b2be 事件总线订阅接线（b2be2）：向量同步、行为画像与 Mongo 索引初始化。
 
 ``register_all()`` 幂等（重复调用不重复注册），由 ``router.py`` 末尾
-接线（调用点保证应用上下文可用）；b3 订单接入购买行为（w=0.55）时在
+接线（调用点以 ``app.app_context()`` 包裹，保证 ``ensure_indexes`` 读
+得 ``app.config``）；b3 订单接入购买行为（w=0.55）时在
 此扩展，不动总线。订阅者异常由 ``events.emit`` 隔离，绝不影响主流程
 200（b2be 保证先 commit 后 emit）。
 
