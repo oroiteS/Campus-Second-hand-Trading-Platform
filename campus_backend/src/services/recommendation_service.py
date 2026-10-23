@@ -5,7 +5,8 @@
 Chroma ``query(user_vector, n_results=90, where 本校+on_sale)`` 召回 →
 过滤自己发布 / 非 on_sale（保底）/ 批内 id 去重 → 取前 32 → 随机补足缺
 口 → 合并（不足即实际数）；③ 写缓存 ``product:home:{school}:{user}``
-（``scoped_key``，商品库 offset=2）TTL 300s。
+（``scoped_key``，商品库 offset=2）TTL 300s。随机路径（冷启动 / 随机
+补足 / 降级）均排除自家在售商品（需求「首页推荐排除自己发布」）。
 
 降级矩阵：embedding / chroma / mongo 任一不可用 → 全随机 + ``degraded:
 true`` + reason（**Redis 不可用 → 跳过缓存直算，不算 degraded**）；管理
@@ -23,6 +24,7 @@ from flask import g
 from src.common import chroma_client, embedding_client, mongo_client, redis_client
 from src.common.auth import scoped_key
 from src.common.redis_client import PRODUCT_DB_OFFSET
+from src.model import Product, db
 from src.services import product_service
 
 logger = logging.getLogger(__name__)
@@ -43,8 +45,14 @@ def _serialize(products: list) -> list[dict]:
     return [p.to_summary_dict() for p in products]
 
 
-def _random_feed(user, limit: int = FEED_TOTAL) -> list:
-    return product_service.list_on_sale_random(g.school_id, [], limit, scope_all=False)
+def _own_on_sale_ids(user) -> list[int]:
+    """用户全部自家 on_sale 商品 id（随机路径排除自家发布，需求「首页推荐」节）。"""
+    rows = db.session.query(Product.id).filter_by(seller_id=user.id, status="on_sale").all()
+    return [row[0] for row in rows]
+
+
+def _random_feed(user, exclude_ids: list[int], limit: int = FEED_TOTAL) -> list:
+    return product_service.list_on_sale_random(g.school_id, exclude_ids, limit, scope_all=False)
 
 
 def _read_cache(user) -> list[dict] | None:
@@ -100,10 +108,11 @@ def _recall_by_profile(user, user_vector: list[float]) -> list:
     return filtered[:PROFILE_TARGET]
 
 
-def _degraded_random(user, reason: str) -> dict:
+def _degraded_random(user, reason: str, exclude_ids: list[int]) -> dict:
     logger.info("推荐降级 user_id=%s: %s", user.id, reason)
+    items = _serialize(_random_feed(user, exclude_ids))
     return {
-        "items": _serialize(_random_feed(user)),
+        "items": items,
         "degraded": True,
         "degraded_reason": reason,
     }
@@ -112,24 +121,27 @@ def _degraded_random(user, reason: str) -> dict:
 def _compute(user) -> dict:
     """缓存未命中路径的完整计算（含降级矩阵与缓存回写）。"""
     # ---- 降级探测：mongo → embedding/chroma（任一不可用 → 全随机 + degraded）----
+    own_ids = _own_on_sale_ids(user)  # 自家 on_sale ⊂ 本校 on_sale，随机路径一并排除
     try:
         user_vector = _profile_vector(user.id)
     except Exception as exc:  # noqa: BLE001 - Mongo 不可用
-        return _degraded_random(user, f"画像存储不可用，已降级为随机推荐: {exc}")
+        return _degraded_random(user, f"画像存储不可用，已降级为随机推荐: {exc}", own_ids)
     if user_vector is None:
         # 冷启动：全随机 40（正常路径，无 degraded 标记）
-        items = _serialize(_random_feed(user))
+        items = _serialize(_random_feed(user, own_ids))
     else:
         available, probe_reason = embedding_client.is_available()
         if not available:
-            return _degraded_random(user, f"embedding 不可用（{probe_reason}），已降级为随机推荐")
+            return _degraded_random(
+                user, f"embedding 不可用（{probe_reason}），已降级为随机推荐", own_ids
+            )
         try:
             recalled = _recall_by_profile(user, user_vector)
         except Exception as exc:  # noqa: BLE001 - Chroma/embedding 真实调用异常
             return _degraded_random(
-                user, f"画像召回异常，已降级为随机推荐: {type(exc).__name__}: {exc}"
+                user, f"画像召回异常，已降级为随机推荐: {type(exc).__name__}: {exc}", own_ids
             )
-        exclude_ids = [p.id for p in recalled]
+        exclude_ids = list({*own_ids, *(p.id for p in recalled)})
         random_fill = product_service.list_on_sale_random(
             g.school_id, exclude_ids, FEED_TOTAL - len(recalled), scope_all=False
         )

@@ -113,6 +113,18 @@ class TestColdStart:
         key = f"product:home:{world.school_id}:{world.viewer['id']}"
         assert key in fake_redis.store
 
+    def test_random_40_excludes_own_products(
+        self, app, client, world, fake_mongo, fake_chroma, fake_embedding, fake_redis,
+        make_auth_header,
+    ):
+        """冷启动全随机排除自家在售（需求「首页推荐排除自己发布」）。"""
+        res = client.get(HOME_URL, headers=make_auth_header(world.viewer["id"]))
+        data = res.get_json()["data"]
+        ids = [item["id"] for item in data["items"]]
+        assert len(ids) == 40  # 排除自家 3 件后他人池 45 件仍足额
+        own_ids = {p.id for p in world.own}
+        assert own_ids.isdisjoint(ids)
+
 
 class TestProfileFeed:
     def test_ratio_32_plus_8_exclusions(
@@ -165,6 +177,37 @@ class TestProfileFeed:
         assert len(ids) == 40
         assert set(ids[:10]) == {p.id for p in recalled}
         assert len(set(ids)) == 40  # 无重复
+
+    def test_random_fill_excludes_own_products(
+        self, app, client, world, product_factory, fake_mongo, fake_chroma, fake_embedding,
+        fake_redis, make_auth_header,
+    ):
+        """P1（int2 联调）：召回缺口 ≫ 池内剩余自家数时，随机补足不得回流自家商品。
+
+        viewer 追加 45 件自家在售（占随机候选池多数），画像仅召回 2 件 →
+        补 38 件；补足池必须排除自家全部 48 件在售。
+        """
+        own_more = [
+            product_factory(world.viewer, world.category.id, title=f"自有追加{i:02d}")
+            for i in range(45)
+        ]
+        profile_vector = _seed_profile(fake_mongo, app, world.viewer["id"])
+        recalled = world.pool[:2]
+        for product in recalled:
+            _seed_chroma(fake_chroma, product, profile_vector, 0.9, school_id=world.school_id)
+
+        res = client.get(
+            HOME_URL,
+            headers=make_auth_header(world.viewer["id"]),
+            query_string={"refresh": "true"},
+        )
+
+        data = res.get_json()["data"]
+        ids = [item["id"] for item in data["items"]]
+        assert len(ids) == 40  # 2 画像 + 38 随机补足
+        own_ids = {p.id for p in world.own + own_more}
+        assert own_ids.isdisjoint(ids)  # 自家商品绝不回流
+        assert set(ids[:2]) == {p.id for p in recalled}  # 前 2 仍为画像召回
 
     def test_cache_hit_skips_recompute(
         self, app, client, world, fake_mongo, fake_chroma, fake_embedding, fake_redis,
