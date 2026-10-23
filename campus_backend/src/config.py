@@ -166,6 +166,16 @@ class Config:
     EMBEDDING_LOCAL_MODEL = _env_str("EMBEDDING_LOCAL_MODEL", "qwen3_embedding_0_6b")
     EMBEDDING_LOCAL_ENABLED = _env_bool("EMBEDDING_LOCAL_ENABLED", True)
 
+    # ---- b2be2 向量与推荐 ----
+    # 检索指令前缀：搜索时拼在用户查询前（Qwen3 为指令感知模型）。默认取
+    # Qwen3 官方检索指令；切模型时按模型卡调整——修改后须全量重建向量。
+    EMBEDDING_QUERY_PREFIX = _env_str(
+        "EMBEDDING_QUERY_PREFIX",
+        "Given a web search query, retrieve relevant passages that answer the query",
+    )
+    # 向量重试补偿线程开关（默认开）：1/true 开，0/false 关
+    VECTOR_RETRY_WORKER = _env_bool("VECTOR_RETRY_WORKER", True)
+
     # ---- 上传 ----
     UPLOAD_DIR = str(_UPLOAD_PATH if _UPLOAD_PATH.is_absolute() else BASE_DIR / _UPLOAD_PATH)
     MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 5)

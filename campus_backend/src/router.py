@@ -10,7 +10,9 @@ from src.routes import (
     favorites,
     images,
     products,
+    recommendations,
     schools,
+    search,
     system,
     uploads,
     users,
@@ -31,6 +33,8 @@ def register_routes(app: Flask) -> None:
     app.register_blueprint(categories.bp, url_prefix="/api")
     app.register_blueprint(uploads.bp, url_prefix="/api")
     # b2be2: search.py / recommendations.py 注册位于其后
+    app.register_blueprint(search.bp, url_prefix="/api/products")
+    app.register_blueprint(recommendations.bp, url_prefix="/api/recommendations")
     # Swagger UI 蓝图自带 url_prefix=/api/docs（静态资源路由挂在其下）
     app.register_blueprint(create_swagger_ui_blueprint())
     # flask-swagger-ui 首页路由注册为 /api/docs/（尾斜杠）；契约路径是
@@ -39,3 +43,11 @@ def register_routes(app: Flask) -> None:
     for rule in app.url_map.iter_rules():
         if rule.rule.startswith(SWAGGER_URL):
             rule.strict_slashes = False
+    # b2be2：向量/画像事件订阅接线（幂等；含 Mongo 索引初始化）。
+    # create_app 执行期无请求上下文，ensure_indexes 经 mongo_client 读
+    # app.config 需显式应用上下文（B-1：缺失时被容错 except 吞掉，
+    # 索引从未建立）。
+    from src.services.events_subscribers import register_all
+
+    with app.app_context():
+        register_all()
