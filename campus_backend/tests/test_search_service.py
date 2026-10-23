@@ -5,6 +5,7 @@
 已知查询向量与固定正交轴混合构造，余弦序确定可控。
 """
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -233,6 +234,36 @@ class TestDegraded:
         # LIKE 标题匹配：含「键盘」的 a/b 命中（created_at 倒序 → b 在前）
         assert ids == [scene.products["b"].id, scene.products["a"].id]
         assert any("搜索降级" in r.message for r in caplog.records)
+
+    def test_degraded_with_price_filter(
+        self,
+        app,
+        client,
+        scene,
+        db_create_all,
+        fake_mongo,
+        fake_chroma,
+        fake_embedding,
+        fake_redis,
+        make_auth_header,
+    ):
+        """S-B 回归守卫：降级 × 价格筛选——原始 str 价格经 list_on_sale
+        一次校验归一化，不得因二次校验类型门（不含 Decimal）抛 9001。"""
+        fake_embedding.fail = True
+        res = client.get(
+            SEARCH_URL,
+            headers=make_auth_header(scene.viewer["id"]),
+            query_string={"q": "键盘", "price_min": "50", "price_max": "200"},
+        )
+
+        assert res.status_code == 200
+        data = res.get_json()["data"]
+        assert data["degraded"] is True
+        ids = [item["id"] for item in data["items"]]
+        # LIKE 命中 a(100)/b(500)，价格区间 [50, 200] 仅 a 存活
+        assert ids == [scene.products["a"].id]
+        for item in data["items"]:
+            assert Decimal("50") <= Decimal(item["price"]) <= Decimal("200")
 
     def test_chroma_down_like_fallback(
         self,
