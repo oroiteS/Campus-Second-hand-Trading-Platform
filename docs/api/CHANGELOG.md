@@ -18,6 +18,22 @@ _记录 `docs/api/` 下全部契约变更（[openapi.yaml](openapi.yaml) · [web
 
 ---
 
+## [0.3.0] - 2026-10-21 · 批次 2 · both
+
+- 操作人：b2api（契约增量任务 agent，worktree `.worktree/b2api`；规格：[02-商品域](../plan/02-商品域.md)「契约增量全案」节）
+- 变更摘要：
+  - 新增 `openapi.yaml` 商品域接口 14 个（`paths:`）：products 8——`GET /products`（本校在售分页列表，列表缓存 TTL 120s 为可选优化）、`POST /products`（发布，成功不依赖向量写入结果）、`GET /products/{id}`（详情，异步记录点击行为）、`PUT /products/{id}`（编辑，`image_ids` 全量替换）、`PATCH /products/{id}/status`（上下架流转）、`DELETE /products/{id}`（软删，图片与收藏记录保留）、`GET /products/mine`、`GET /products/search`（向量召回 top 60 + LIKE 降级 + `degraded` 字段，不写缓存）；favorites 3——`POST /products/{id}/favorite`、`DELETE /products/{id}/favorite`（取消幂等）、`GET /favorites/mine`（条目含 `favorited_at`，含 off_sale/sold/trading，deleted 不返回）；categories 1——`GET /categories`（仅启用、不分页、缓存 TTL 3600s）；uploads 1——`POST /uploads`（multipart，`purpose` 本批次仅 `product`，b4 聊天图扩展 `image_message`）；recommendations 1——`GET /recommendations/home`（画像 32 + 随机 8 补足、冷启动全随机 40、`refresh` 换一批）。
+  - 新增业务错误码并写入 `info.description` 错误码表：30xx 段二码——3001 商品状态不允许该操作（409）/ 3002 商品已被管理员强制下架（403，仅管理员可恢复）；90xx 段补 9007 方法不支持（405 场景统一走 envelope）。
+  - 新增 `components/schemas`：`ProductCondition`（成色 5 档枚举）/ `ProductDetail`（继承 ProductSummary 全字段）/ `ProductCreateInput`（发布/编辑共用，pattern/约束双端同源）/ `ProductStatusActionInput` / `FavoriteActionData`。
+  - 新增 `tags`：`products` / `categories` / `favorites` / `recommendations` / `uploads`（`uploads` 为标签规划扩充的通用 tag，b4 聊天图复用）。
+  - 修订：上传校验表述四件套 → 五件套（补内容魔数嗅探：PNG 8 字节签名 / JPEG SOI / WEBP RIFF+WEBP）；鉴权节补「图片 Cookie 通道」（login `Set-Cookie img_token` / `GET /images/{id}` 双通道 / logout 清除，仅图片路由接受 Cookie 认证）；`ProductSummary.condition` 由留白 string 定稿为 `ProductCondition` 枚举引用；错误码表 30xx 行由「批次 2 定义」具体化为二码；标签规划行标注批次 2 已建立商品域部分。
+- 影响说明：
+  - 双端共同：本版本即 b2 双端开发基线，契约冻结为 0.3.0（记入看板「契约冻结版本」列）；任一端发现契约缺陷 → 停手上报契约修订任务，不得私改。
+  - 前端：重新生成 `src/api/types.ts` 并同步契约同构 mock 5 个模块（商品发布/详情/列表搜索、收藏、分类选择器、图片上传、首页推荐）。
+  - 后端：按冻结契约实现商品域 14 接口（字段校验双端同源独立复验、五件套上传、30xx 错误码、降级标记、Decimal 金额纪律）；b1 存量三处微改——auth 登录 `Set-Cookie img_token`、`GET /images/{id}` 双通道鉴权、405 全局错误统一 envelope（9007）。
+
+---
+
 ## [0.2.0] - 2026-10-21 · 批次 1 · both
 
 - 操作人：b1api（契约增量任务 agent，分支 `feat/api/b1-user-domain`；规格：[01-用户域](../plan/01-用户域.md)「契约增量全案」节）

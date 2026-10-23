@@ -11,7 +11,7 @@ openapi: 3.0.3
 
 info:
   title: 校园二手交易平台 API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     ## 总则
 
@@ -37,9 +37,10 @@ info:
 
     ### 业务错误码（分段制）
 
-    `code = 0` 成功；失败按模块分段。**已定义 10xx / 20xx / 90xx 三段**
-    （20xx 用户域段为批次 1 · v0.2.0 新增），30xx–60xx 段已预留，
-    具体码随所属批次契约更新补全：
+    `code = 0` 成功；失败按模块分段。**已定义 10xx / 20xx / 30xx / 90xx
+    四段**（20xx 用户域段为批次 1 · v0.2.0 新增；30xx 商品域段为
+    批次 2 · v0.3.0 新增），40xx–60xx 段已预留，具体码随所属批次契约
+    更新补全：
 
     | code | HTTP | 含义 | 说明 |
     | --- | --- | --- | --- |
@@ -56,7 +57,8 @@ info:
     | 2004 | 422 | 重置凭证不匹配 | 用户名与学号/邮箱对不上；用户名不存在同样返回（防探测） |
     | 2005 | 401 | 用户名或密码错误 | 登录失败；连续 5 次后转 `429 / 1006` |
     | 2006 | 403 | 账号已被封禁 | `status = banned` 用户登录 |
-    | 30xx | — | 商品域 | 批次 2 定义（商品/图片/收藏/分类/搜索/推荐） |
+    | 3001 | 409 | 商品状态不允许该操作 | 编辑 / 删除 / 上下架 / 收藏的前置状态不满足（如编辑 `trading` 商品、删除 `sold` 商品、收藏非 `on_sale` 商品）；`message` 说明当前状态与允许的操作 |
+    | 3002 | 403 | 商品已被管理员强制下架 | 卖家对 `forced_off` 商品请求重新上架（仅管理员可恢复，批次 5 场景前置） |
     | 40xx | — | 交易域 | 批次 3 定义（订单/支付/评价） |
     | 50xx | — | 聊天域 | 批次 4 定义（会话/消息） |
     | 60xx | — | 管理域 | 批次 5 定义（审核/处置/统计/导入） |
@@ -66,6 +68,7 @@ info:
     | 9004 | 503 | 依赖服务不可用 | 仅用于降级后无法完成本操作的场景 |
     | 9005 | 500 | 服务器内部错误 | |
     | 9006 | 429 | 请求过于频繁 | 1006 之外的通用限流 |
+    | 9007 | 405 | 方法不支持 | 请求方法与路由不匹配（405 场景统一走 envelope 返回） |
 
     ### 鉴权
 
@@ -75,6 +78,11 @@ info:
       （返回 `403 / 1005`）。
     - 图片实体文件经后端鉴权路由访问，不暴露可枚举静态目录；学生证照片仅
       本人与管理员可读（越权返回 `404 / 9002`，同样防探测）。
+    - 图片 Cookie 通道：登录成功时 `Set-Cookie img_token`（httpOnly、
+      SameSite=Lax、Path=/api/images、TTL 同令牌，值为同一 JWT）；
+      `GET /api/images/{id}` 优先 `Authorization` 头，缺失时回退该
+      Cookie，二者走同一 JWT 校验与黑名单；登出时清除。**仅图片路由
+      接受 Cookie 认证，其余接口一律 Bearer**。
 
     ### 同校隔离
 
@@ -96,7 +104,7 @@ info:
     | 金额 | number，单位元，最多两位小数 |
     | id | integer（int64） |
     | 分页参数 | `page`（从 1 起）、`page_size`（默认 20，上限 100） |
-    | 上传 | `multipart/form-data`；单文件 ≤ 5 MB；仅 `jpg` / `png` / `webp`；文件名服务端重写为内容哈希 |
+    | 上传 | `multipart/form-data`；单文件 ≤ 5 MB；仅 `jpg` / `png` / `webp`；服务端五件套校验：扩展名 + MIME + 大小 + 内容魔数嗅探（PNG 8 字节签名 / JPEG SOI / WEBP RIFF+WEBP）+ 内容哈希改名 |
     | 布尔状态值 | 一律英文小写枚举（如 `on_sale`、`pending`），中文仅出现在展示文案 |
 
     ### 工具链
@@ -111,8 +119,9 @@ info:
 
     `system`(批次0) ·
     `auth`/`users`/`certification`/`schools`/`images`(批次1 已建立用户域部分) ·
-    `products`/`categories`/`favorites`/`recommendations`(批次2；`images` 的
-    商品图用途批次 2 扩展) · `orders`(批次3) · `conversations`(批次4) ·
+    `products`/`categories`/`favorites`/`recommendations`(批次2 已建立商品域
+    部分；`images` 的商品图用途批次 2 扩展) · `uploads`(批次2 新增通用
+    tag，b4 聊天图复用) · `orders`(批次3) · `conversations`(批次4) ·
     `admin`(批次5)
 
 # ============================================================
@@ -137,6 +146,16 @@ tags:
     description: 学校与校区公开列表（批次 1 建立）
   - name: images
     description: 图片实体鉴权访问（批次 1 建立用户域用途；商品图用途批次 2 扩展）
+  - name: products
+    description: 商品发布 / 详情 / 列表 / 搜索与我的商品（批次 2 建立）
+  - name: categories
+    description: 商品分类列表（批次 2 建立）
+  - name: favorites
+    description: 商品收藏与收藏列表（批次 2 建立）
+  - name: recommendations
+    description: 首页个性化推荐（批次 2 建立）
+  - name: uploads
+    description: 通用图片上传（批次 2 建立商品图用途；b4 聊天图复用扩展）
 
 # 全局默认鉴权：标注「公开」的接口在路径内以 security: [] 覆盖
 security:
@@ -345,7 +364,17 @@ paths:
               password: Pass1234
       responses:
         '200':
-          description: 登录成功，返回访问令牌与用户资料。
+          description: 登录成功，返回访问令牌与用户资料；同时 Set-Cookie 签发图片 Cookie 通道令牌 img_token。
+          headers:
+            Set-Cookie:
+              description: |
+                图片 Cookie 通道令牌：`img_token=<JWT>`（httpOnly、
+                SameSite=Lax、Path=/api/images、TTL 同访问令牌，值为同一
+                JWT），供 `GET /api/images/{id}` 缺失 `Authorization` 头时
+                回退使用；`POST /auth/logout` 对应清除。
+              schema:
+                type: string
+              example: img_token=eyJhbGciOiJIUzI1NiJ9.sig; HttpOnly; SameSite=Lax; Path=/api/images; Max-Age=86400
           content:
             application/json:
               schema:
@@ -936,15 +965,18 @@ paths:
       operationId: getImage
       summary: 图片实体鉴权访问
       description: |
-        需登录。返回图片实体二进制（`image/jpeg|png|webp`）。**本接口不走
-        统一响应体 envelope**，直接输出文件流；出错时仍按 `ErrorEnvelope`
+        需登录。鉴权：`Authorization: Bearer` 或图片 Cookie（见总则
+        「图片 Cookie 通道」）双通道，二者走同一 JWT 校验与黑名单。
+        返回图片实体二进制（`image/jpeg|png|webp`）。**本接口不走统一
+        响应体 envelope**，直接输出文件流；出错时仍按 `ErrorEnvelope`
         的 JSON 结构返回错误体。
 
         - 访问控制（NFR-08）：`purpose = student_card` 的图片**仅上传者
-          本人与管理员**可读；其余（本批次仅 `avatar`）登录即可读。
+          本人与管理员**可读；其余（`avatar` 与本版本扩展的 `product`）
+          登录即可读。
         - 越权与不存在一律 `404 / 9002`，不区分两种情况（防探测）。
-        - 批次 2 起商品图、批次 4 聊天图复用本接口，`purpose` 值域随
-          批次扩展。
+        - `purpose` 值域本版本扩展 `product`（商品图）；批次 4 聊天图
+          复用本接口，值域随批次继续扩展。
       parameters:
         - name: id
           in: path
@@ -973,6 +1005,1231 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  # ============================================================
+  # 商品域（批次 2 · v0.3.0）：products / categories / favorites /
+  # uploads / recommendations
+  # ============================================================
+
+  /products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: 本校在售商品分页列表
+      description: |
+        需登录且已通过校园认证（verified）。本校 `status = on_sale` 商品
+        分页列表；管理员对本校跨校区可见全部商品（`g.scope_all`），但
+        发布 / 编辑 / 收藏 / 上传等写操作对管理员一律拒绝（见各写接口）。
+
+        - 筛选：`category_id`（须为启用分类）/ `condition` / `price_min` /
+          `price_max`（数值 ≥ 0 且 `price_min ≤ price_max`，违反 → 9001）/
+          `campus_id`（须为本校启用校区）/ `keyword`（LIKE 标题匹配，
+          全角不转义直配，≤ 100 字符）；`sort` 缺省 `newest`。
+        - 筛选参数无效（分类 / 校区不存在或停用、价格区间颠倒等）返回
+          `422 / 9001`，`data.fields` 字段级错误。
+        - 列表缓存 `product:list:{school}:{hash}` TTL 120s 为**可选优化**
+          （NFR-04 达标不强制；若实现，编辑 / 状态变更 / 删除须同步失效）。
+      parameters:
+        - name: category_id
+          in: query
+          required: false
+          description: 分类 id 筛选；填写时须为启用分类，否则 9001。
+          schema:
+            type: integer
+            format: int64
+        - name: condition
+          in: query
+          required: false
+          description: 成色筛选（ProductCondition 单值）。
+          schema:
+            $ref: '#/components/schemas/ProductCondition'
+        - name: price_min
+          in: query
+          required: false
+          description: 价格下界（元，≥ 0）；须 ≤ price_max。
+          schema:
+            type: number
+            minimum: 0
+        - name: price_max
+          in: query
+          required: false
+          description: 价格上界（元，≥ 0）。
+          schema:
+            type: number
+            minimum: 0
+        - name: campus_id
+          in: query
+          required: false
+          description: 校区 id 筛选；填写时须为本校启用校区，否则 9001。
+          schema:
+            type: integer
+            format: int64
+        - name: keyword
+          in: query
+          required: false
+          description: 标题关键词（LIKE 匹配，全角不转义直配，≤ 100 字符）。
+          schema:
+            type: string
+            maxLength: 100
+        - name: sort
+          in: query
+          required: false
+          description: 排序方式，缺省 newest。
+          schema:
+            type: string
+            enum: [newest, price_asc, price_desc]
+            default: newest
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 本校在售商品分页列表（仅 on_sale）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PaginatedData'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/ProductSummary'
+              example:
+                code: 0
+                message: ok
+                data:
+                  items:
+                    - id: 101
+                      title: 罗技 K845 机械键盘
+                      price: 199.0
+                      original_price: 399.0
+                      condition: excellent
+                      status: on_sale
+                      cover:
+                        id: 42
+                        url: /api/images/42
+                      favorite_count: 3
+                      category:
+                        id: 1
+                        name: 数码电子
+                      seller:
+                        id: 2
+                        display_name: 小明-示例大学(东校区)
+                        nickname: 小明
+                        auth_status: approved
+                        role: student
+                      campus:
+                        id: 1
+                        school_id: 1
+                        name: 东校区
+                      created_at: '2026-10-21T10:00:00+08:00'
+                  page: 1
+                  page_size: 20
+                  total: 1
+                  pages: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: 筛选参数无效（code 9001；data.fields 字段级错误）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9001
+                message: 参数校验失败
+                data:
+                  fields:
+                    price_min: 价格下界不得大于价格上界
+
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: 发布商品
+      description: |
+        需登录且已通过校园认证（verified，学生；管理员发布一律
+        `409 / 9003`，message 说明管理员无交易能力——与 b1 认证提交对
+        管理员的处理口径一致）。
+
+        - 字段校验（双端同源，约束见 `ProductCreateInput`）失败统一
+          `422 / 9001`（`data.fields` 字段级）：含 `image_ids` 归属
+          （须本人 `purpose=product` 上传）与数量（1–9）、`category_id`
+          无效、`campus_id` 非本校启用校区。
+        - 发布成功商品 `status = on_sale`、`moderation_status = normal`
+          （敏感词库批次 5 接入）；**发布成功不依赖向量写入结果**（向量
+          异步写入，失败进重试队列）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreateInput'
+            example:
+              title: 罗技 K845 机械键盘
+              description: 去年购入，自用一年，键帽轻微打油，功能完好。
+              price: 199.0
+              original_price: 399.0
+              category_id: 1
+              condition: excellent
+              campus_id: 1
+              image_ids: [42, 43, 44]
+      responses:
+        '200':
+          description: 发布成功，返回商品详情（status = on_sale）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductDetail'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 101
+                  title: 罗技 K845 机械键盘
+                  price: 199.0
+                  original_price: 399.0
+                  condition: excellent
+                  status: on_sale
+                  cover:
+                    id: 42
+                    url: /api/images/42
+                  favorite_count: 0
+                  category:
+                    id: 1
+                    name: 数码电子
+                  seller:
+                    id: 1
+                    display_name: 小张-示例大学(东校区)
+                    nickname: 小张
+                    auth_status: approved
+                    role: student
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  created_at: '2026-10-21T10:00:00+08:00'
+                  description: 去年购入，自用一年，键帽轻微打油，功能完好。
+                  images:
+                    - id: 42
+                      url: /api/images/42
+                    - id: 43
+                      url: /api/images/43
+                    - id: 44
+                      url: /api/images/44
+                  view_count: 0
+                  is_favorited: false
+                  updated_at: '2026-10-21T10:00:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 管理员发布拒绝（code 9003；管理员无交易能力）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9003
+                message: 管理员无交易能力，不能发布商品
+                data: null
+        '422':
+          description: 字段校验失败（code 9001；含 image_ids 归属/数量、category_id/campus_id 无效）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9001
+                message: 参数校验失败
+                data:
+                  fields:
+                    image_ids: 图片须为本人上传的商品图，数量 1–9 张
+
+  /products/mine:
+    get:
+      tags: [products]
+      operationId: listMyProducts
+      summary: 我的商品
+      description: |
+        需登录且已通过校园认证（verified，学生）。当前用户发布的商品分页
+        列表，按 `created_at` 倒序；只看自己的，不受本校过滤之外的 scope
+        影响。`status` 缺省返回除 `deleted` 外全部状态。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ProductStatus 单值）；缺省返回除 deleted 外全部。
+          schema:
+            $ref: '#/components/schemas/ProductStatus'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 我的商品分页列表（created_at 倒序）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PaginatedData'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/ProductSummary'
+              example:
+                code: 0
+                message: ok
+                data:
+                  items:
+                    - id: 101
+                      title: 罗技 K845 机械键盘
+                      price: 199.0
+                      original_price: 399.0
+                      condition: excellent
+                      status: off_sale
+                      cover:
+                        id: 42
+                        url: /api/images/42
+                      favorite_count: 3
+                      category:
+                        id: 1
+                        name: 数码电子
+                      seller:
+                        id: 1
+                        display_name: 小张-示例大学(东校区)
+                        nickname: 小张
+                        auth_status: approved
+                        role: student
+                      campus:
+                        id: 1
+                        school_id: 1
+                        name: 东校区
+                      created_at: '2026-10-21T10:00:00+08:00'
+                  page: 1
+                  page_size: 20
+                  total: 1
+                  pages: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /products/search:
+    get:
+      tags: [products]
+      operationId: searchProducts
+      summary: 商品向量搜索
+      description: |
+        需登录且已通过校园认证（verified）。`q` 拼指令前缀向量化 →
+        Chroma 余弦召回 top 60（where：本校 + `on_sale`）→ MySQL 按 id
+        与业务条件精筛 → **按原始相似度降序**分页；`n_results` 取召回
+        上限 1.5 倍（90）供过滤损耗。
+
+        - `q` 必填 1–100 字符，空白视为未填写 → `422 / 9001`。
+        - 降级：Embedding 或 Chroma 不可用 → MySQL `LIKE` 标题匹配
+          （按 `created_at` 倒序），`data` 附加 `degraded: true` 与
+          `degraded_reason`；LIKE 恒可用，故本接口实际不触达 `9004`
+          （正常降级一律 200 + `degraded`）。
+        - **不写缓存**（条件组合爆炸）。
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: 搜索词（1–100 字符）；空白视为未填写 → 9001。
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: category_id
+          in: query
+          required: false
+          description: 分类 id 筛选；填写时须为启用分类，否则 9001。
+          schema:
+            type: integer
+            format: int64
+        - name: condition
+          in: query
+          required: false
+          description: 成色筛选（ProductCondition 单值）。
+          schema:
+            $ref: '#/components/schemas/ProductCondition'
+        - name: price_min
+          in: query
+          required: false
+          description: 价格下界（元，≥ 0）；须 ≤ price_max。
+          schema:
+            type: number
+            minimum: 0
+        - name: price_max
+          in: query
+          required: false
+          description: 价格上界（元，≥ 0）。
+          schema:
+            type: number
+            minimum: 0
+        - name: campus_id
+          in: query
+          required: false
+          description: 校区 id 筛选；填写时须为本校启用校区，否则 9001。
+          schema:
+            type: integer
+            format: int64
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: |
+            搜索结果分页（按原始相似度降序；降级时按 created_at 倒序并
+            附加 degraded 字段）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PaginatedData'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/ProductSummary'
+                              degraded:
+                                type: boolean
+                                description: 降级标记；正常响应不带（false 语义）。
+                              degraded_reason:
+                                type: string
+                                description: 降级原因摘要；正常响应不带。
+              example:
+                code: 0
+                message: ok
+                data:
+                  items:
+                    - id: 101
+                      title: 罗技 K845 机械键盘
+                      price: 199.0
+                      original_price: 399.0
+                      condition: excellent
+                      status: on_sale
+                      cover:
+                        id: 42
+                        url: /api/images/42
+                      favorite_count: 3
+                      category:
+                        id: 1
+                        name: 数码电子
+                      seller:
+                        id: 2
+                        display_name: 小明-示例大学(东校区)
+                        nickname: 小明
+                        auth_status: approved
+                        role: student
+                      campus:
+                        id: 1
+                        school_id: 1
+                        name: 东校区
+                      created_at: '2026-10-21T10:00:00+08:00'
+                  page: 1
+                  page_size: 20
+                  total: 1
+                  pages: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: 搜索词或筛选参数无效（code 9001；q 空白视为未填写）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9001
+                message: 参数校验失败
+                data:
+                  fields:
+                    q: 搜索词不能为空，长度须为 1–100 字符
+
+  /products/{id}:
+    get:
+      tags: [products]
+      operationId: getProductDetail
+      summary: 商品详情
+      description: |
+        需登录且已通过校园认证（verified）。返回商品详情完整形态（含
+        `is_favorited` / `view_count` / 图集数组）。
+
+        - 可见性：本校 `on_sale` 对全员；`trading` 仅买卖双方（本批无
+          订单，恒不满足）与管理员；`off_sale` 仅卖家与管理员；
+          `sold` / `deleted` 无人可见；非本校 / 越权 / 不存在一律
+          `404 / 9002`（防探测，不区分三种情况）。
+        - 服务端顺带记录点击行为（写行为流水 + 画像更新；异步允许失败，
+          不影响本响应延迟——实现细节见 b2be2 任务卡）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 商品 id。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 商品详情（含 is_favorited / view_count / 图集）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductDetail'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 101
+                  title: 罗技 K845 机械键盘
+                  price: 199.0
+                  original_price: 399.0
+                  condition: excellent
+                  status: on_sale
+                  cover:
+                    id: 42
+                    url: /api/images/42
+                  favorite_count: 3
+                  category:
+                    id: 1
+                    name: 数码电子
+                  seller:
+                    id: 2
+                    display_name: 小明-示例大学(东校区)
+                    nickname: 小明
+                    auth_status: approved
+                    role: student
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  created_at: '2026-10-21T10:00:00+08:00'
+                  description: 去年购入，自用一年，键帽轻微打油，功能完好。
+                  images:
+                    - id: 42
+                      url: /api/images/42
+                    - id: 43
+                      url: /api/images/43
+                    - id: 44
+                      url: /api/images/44
+                  view_count: 27
+                  is_favorited: true
+                  updated_at: '2026-10-21T10:00:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 商品不存在、非本校或无权访问（code 9002；不区分，防探测）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9002
+                message: 商品不存在
+                data: null
+
+    put:
+      tags: [products]
+      operationId: updateProduct
+      summary: 编辑商品
+      description: |
+        需登录且已通过校园认证（verified，学生，仅发布者本人；管理员编辑
+        一律 `409 / 9003`，message 说明管理员无交易能力）。
+
+        - 请求体为 `ProductCreateInput` 全量字段；`image_ids` **全量
+          替换**，数组顺序即展示排序。
+        - 可编辑状态：`on_sale` / `off_sale`（off_sale 编辑后仍
+          off_sale）；`trading` / `sold` → `409 / 3001`；`deleted` →
+          `404 / 9002`。
+        - 非本人 / 非本校 / 不存在一律 `404 / 9002`，不区分（防探测）。
+        - 编辑成功失效 `product:detail` 缓存并触发向量重建事件
+          （`text_hash` 未变则订阅方跳过——见 b2be2）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 商品 id。
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreateInput'
+            example:
+              title: 罗技 K845 机械键盘（降价急出）
+              description: 去年购入，自用一年，键帽轻微打油，功能完好；急出降价。
+              price: 179.0
+              original_price: 399.0
+              category_id: 1
+              condition: excellent
+              campus_id: 1
+              image_ids: [42, 44]
+      responses:
+        '200':
+          description: 编辑成功，返回最新商品详情。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductDetail'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 101
+                  title: 罗技 K845 机械键盘（降价急出）
+                  price: 179.0
+                  original_price: 399.0
+                  condition: excellent
+                  status: on_sale
+                  cover:
+                    id: 42
+                    url: /api/images/42
+                  favorite_count: 3
+                  category:
+                    id: 1
+                    name: 数码电子
+                  seller:
+                    id: 1
+                    display_name: 小张-示例大学(东校区)
+                    nickname: 小张
+                    auth_status: approved
+                    role: student
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  created_at: '2026-10-21T10:00:00+08:00'
+                  description: 去年购入，自用一年，键帽轻微打油，功能完好；急出降价。
+                  images:
+                    - id: 42
+                      url: /api/images/42
+                    - id: 44
+                      url: /api/images/44
+                  view_count: 27
+                  is_favorited: false
+                  updated_at: '2026-10-21T11:00:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 商品状态不允许编辑（code 3001）或管理员编辑拒绝（code 9003）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                invalid_status:
+                  summary: 状态不允许编辑
+                  value:
+                    code: 3001
+                    message: 商品当前状态为交易中，不允许编辑；仅上架或已下架商品可编辑
+                    data: null
+                admin_forbidden:
+                  summary: 管理员无交易能力
+                  value:
+                    code: 9003
+                    message: 管理员无交易能力，不能编辑商品
+                    data: null
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    delete:
+      tags: [products]
+      operationId: deleteProduct
+      summary: 删除商品（软删）
+      description: |
+        需登录且已通过校园认证（verified，学生，仅发布者本人）。软删除：
+        `status` 置 `deleted`，图片与收藏记录保留（不可见，YAGNI）。
+
+        - 可删状态：`on_sale` / `off_sale`；`trading` / `sold` →
+          `409 / 3001`；已删 / 非本人 / 非本校 / 不存在一律
+          `404 / 9002`（防探测）。
+        - 成功触发向量删除事件与 detail / 列表缓存失效。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 商品 id。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 删除成功（data 为 null；status 置 deleted，图片与收藏记录保留）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        nullable: true
+                        description: 固定为 null。
+              example:
+                code: 0
+                message: ok
+                data: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 商品状态不允许删除（code 3001；仅 on_sale / off_sale 可删）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 3001
+                message: 商品已售出，不允许删除
+                data: null
+
+  /products/{id}/status:
+    patch:
+      tags: [products]
+      operationId: updateProductStatus
+      summary: 上架 / 下架商品
+      description: |
+        需登录且已通过校园认证（verified，学生，仅发布者本人）。目标状态
+        仅 `on_sale` / `off_sale` 二值。
+
+        - 流转：`on_sale → off_sale`（卖家下架）、`off_sale → on_sale`
+          （重新上架）；商品被管理员强制下架（`forced_off`）时重新上架 →
+          `403 / 3002`（仅管理员可恢复，批次 5 场景前置）；其余源状态
+          （`trading` / `sold`）→ `409 / 3001`。
+        - 成功失效 detail / 列表相关缓存，并发出向量状态同步事件。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 商品 id。
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductStatusActionInput'
+            example:
+              status: off_sale
+      responses:
+        '200':
+          description: 状态更新成功，返回最新商品概要。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProductSummary'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 101
+                  title: 罗技 K845 机械键盘
+                  price: 199.0
+                  original_price: 399.0
+                  condition: excellent
+                  status: off_sale
+                  cover:
+                    id: 42
+                    url: /api/images/42
+                  favorite_count: 3
+                  category:
+                    id: 1
+                    name: 数码电子
+                  seller:
+                    id: 1
+                    display_name: 小张-示例大学(东校区)
+                    nickname: 小张
+                    auth_status: approved
+                    role: student
+                  campus:
+                    id: 1
+                    school_id: 1
+                    name: 东校区
+                  created_at: '2026-10-21T10:00:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 未通过校园认证（code 1004）或商品已被管理员强制下架（code 3002）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                forbidden:
+                  summary: 未通过校园认证
+                  value:
+                    code: 1004
+                    message: 请先完成校园认证
+                    data: null
+                forced_off:
+                  summary: 商品已被管理员强制下架
+                  value:
+                    code: 3002
+                    message: 商品已被管理员强制下架，无法重新上架；如有疑问请联系管理员
+                    data: null
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 源状态不允许该流转（code 3001；如 trading / sold 商品上下架）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 3001
+                message: 商品当前状态为交易中，仅上架或已下架商品可执行上下架
+                data: null
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /products/{id}/favorite:
+    post:
+      tags: [favorites]
+      operationId: favoriteProduct
+      summary: 收藏商品
+      description: |
+        需登录且已通过校园认证（verified，学生；管理员收藏一律
+        `409 / 9003`，message 说明管理员无交易能力）。无请求体。
+
+        - 仅本校 `on_sale` 商品可收藏：商品非 on_sale → `409 / 3001`
+          （message 说明当前状态与允许的操作）；非本校 / 不存在 →
+          `404 / 9002`（防探测）。
+        - 重复收藏 → `409 / 9003`。
+        - **收藏关系写库必须成功**；画像更新允许失败重试（异步，需求
+          「收藏与画像」节）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 商品 id。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 收藏成功，返回最新收藏状态与该商品收藏数。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FavoriteActionData'
+              example:
+                code: 0
+                message: ok
+                data:
+                  favorited: true
+                  favorite_count: 4
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 重复收藏（code 9003）或商品状态不允许收藏（code 3001）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                duplicate:
+                  summary: 重复收藏
+                  value:
+                    code: 9003
+                    message: 已收藏该商品
+                    data: null
+                invalid_status:
+                  summary: 商品非在售
+                  value:
+                    code: 3001
+                    message: 商品当前状态为已下架，仅上架商品可收藏
+                    data: null
+
+    delete:
+      tags: [favorites]
+      operationId: unfavoriteProduct
+      summary: 取消收藏（幂等）
+      description: |
+        需登录且已通过校园认证（verified，学生）。无请求体；幂等：未收藏
+        同样返回 200。按 (user, product) 直查本校记录，无记录 → 200；
+        商品非本校 / 不存在仍 `404 / 9002`（防探测）。收藏时已校验同校，
+        不存在跨校收藏记录边界。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 商品 id。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 取消成功（幂等，未收藏同样 200），返回最新收藏状态与收藏数。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FavoriteActionData'
+              example:
+                code: 0
+                message: ok
+                data:
+                  favorited: false
+                  favorite_count: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /favorites/mine:
+    get:
+      tags: [favorites]
+      operationId: listMyFavorites
+      summary: 我的收藏列表
+      description: |
+        需登录且已通过校园认证（verified，学生）。当前用户收藏的商品分页
+        列表，按收藏时间（`favorited_at`）倒序；条目为商品概要 + 收藏
+        时间，**含 `off_sale` / `sold` / `trading` 商品**（前端按
+        status 置灰并提供取消入口）；`deleted` 商品条目不返回。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 我的收藏分页列表（favorited_at 倒序）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/PaginatedData'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  allOf:
+                                    - $ref: '#/components/schemas/ProductSummary'
+                                    - type: object
+                                      required: [favorited_at]
+                                      properties:
+                                        favorited_at:
+                                          type: string
+                                          format: date-time
+                                          description: 收藏时间（ISO 8601，+08:00）。
+              example:
+                code: 0
+                message: ok
+                data:
+                  items:
+                    - id: 101
+                      title: 罗技 K845 机械键盘
+                      price: 199.0
+                      original_price: 399.0
+                      condition: excellent
+                      status: off_sale
+                      cover:
+                        id: 42
+                        url: /api/images/42
+                      favorite_count: 3
+                      category:
+                        id: 1
+                        name: 数码电子
+                      seller:
+                        id: 2
+                        display_name: 小明-示例大学(东校区)
+                        nickname: 小明
+                        auth_status: approved
+                        role: student
+                      campus:
+                        id: 1
+                        school_id: 1
+                        name: 东校区
+                      created_at: '2026-10-21T10:00:00+08:00'
+                      favorited_at: '2026-10-21T12:00:00+08:00'
+                  page: 1
+                  page_size: 20
+                  total: 1
+                  pages: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /categories:
+    get:
+      tags: [categories]
+      operationId: listCategories
+      summary: 商品分类列表
+      description: |
+        需登录且已通过校园认证（verified；2026-10-21 用户确认，与商品域
+        准入线一致）。全部启用（`enabled`）分类，按 `sort_order` 升序、
+        id 升序；**不分页**——全局分类量小，发布 / 筛选选择器一次取全。
+        缓存 `product:category:all` TTL 3600s（管理员维护后失效——
+        批次 5 接手）。
+      responses:
+        '200':
+          description: 启用分类列表（sort_order 升序、id 升序，不分页）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CategoryRef'
+              example:
+                code: 0
+                message: ok
+                data:
+                  - id: 1
+                    name: 数码电子
+                  - id: 2
+                    name: 图书教材
+                  - id: 3
+                    name: 生活用品
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /uploads:
+    post:
+      tags: [uploads]
+      operationId: uploadImage
+      summary: 通用图片上传
+      description: |
+        需登录且已通过校园认证（verified，学生；管理员上传一律
+        `409 / 9003`，message 说明管理员无交易能力）。`multipart/form-data`：
+        `file` 单文件 + `purpose` form 字段（本批次仅 `product`）。
+
+        - 五件套校验（见总则「通用格式约定」）：扩展名 + MIME + 大小
+          （≤ 5 MB）+ 内容魔数嗅探（PNG 8 字节签名 / JPEG SOI / WEBP
+          RIFF+WEBP）+ 内容哈希改名；不符 `422 / 9001`，
+          `data.fields.file` 携带原因。
+        - 实体落 `uploads/product/<年月>/`，文件名改写为内容哈希；
+          `owner_id` 记录；**发布前图片无商品关联**（孤儿，见清理策略）。
+        - b4 聊天图复用本接口扩展 `purpose=image_message`。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, purpose]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 图片文件（jpg/png/webp，≤ 5 MB，五件套校验）。
+                purpose:
+                  type: string
+                  enum: [product]
+                  description: 上传用途；本批次仅 product（商品图），b4 扩展 image_message（聊天图）。
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 上传成功，返回图片引用（发布前无商品关联）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImageRef'
+              example:
+                code: 0
+                message: ok
+                data:
+                  id: 42
+                  url: /api/images/42
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 管理员上传拒绝（code 9003；管理员无交易能力）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9003
+                message: 管理员无交易能力，不能上传商品图片
+                data: null
+        '422':
+          description: 文件类型 / 大小 / 魔数不符（code 9001；data.fields.file 携带原因）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                code: 9001
+                message: 参数校验失败
+                data:
+                  fields:
+                    file: 仅支持 jpg / png / webp 且不超过 5 MB，文件内容与扩展名不符
+
+  /recommendations/home:
+    get:
+      tags: [recommendations]
+      operationId: getHomeRecommendations
+      summary: 首页推荐
+      description: |
+        需登录且已通过校园认证（verified，学生；管理员 → 空列表 200，无
+        推荐语义）。返回 ≤ 40 个本校 `on_sale` 商品（排除自己发布、批内
+        按 id 去重）。
+
+        - 配比：有画像 32 画像召回 + 8 随机补足（召回不足以随机补齐
+          缺口）；冷启动（无 `user_profiles` 文档）全随机 40。
+        - 缓存 `product:home:{school}:{user}` TTL 300s；`refresh`
+          传 `"true"` 时绕过缓存强制重算（「换一批」）。
+        - 降级：Embedding / Chroma / Mongo 任一不可用 → 全随机 +
+          `degraded: true`；Redis 不可用 → 不缓存直算，**不算 degraded**。
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          description: 传 "true" 时绕过缓存强制重算（「换一批」）。
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 首页推荐列表（≤ 40 个；管理员返回空列表）。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [items]
+                        properties:
+                          items:
+                            type: array
+                            maxItems: 40
+                            items:
+                              $ref: '#/components/schemas/ProductSummary'
+                          degraded:
+                            type: boolean
+                            description: 降级标记；正常响应不带（false 语义）。
+                          degraded_reason:
+                            type: string
+                            description: 降级原因摘要；正常响应不带。
+              example:
+                code: 0
+                message: ok
+                data:
+                  items:
+                    - id: 105
+                      title: 小米真无线蓝牙耳机 Air2
+                      price: 89.0
+                      original_price: 199.0
+                      condition: as_new
+                      status: on_sale
+                      cover:
+                        id: 50
+                        url: /api/images/50
+                      favorite_count: 1
+                      category:
+                        id: 1
+                        name: 数码电子
+                      seller:
+                        id: 2
+                        display_name: 小明-示例大学(东校区)
+                        nickname: 小明
+                        auth_status: approved
+                        role: student
+                      campus:
+                        id: 1
+                        school_id: 1
+                        name: 东校区
+                      created_at: '2026-10-20T18:30:00+08:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
 # ============================================================
 
@@ -1210,7 +2467,8 @@ components:
       type: object
       description: |
         图片引用。实体文件经后端鉴权路由 `GET /api/images/{id}` 访问，
-        不暴露可枚举静态目录。
+        不暴露可枚举静态目录；`url` 为同源相对路径，`<img>` 标签经图片
+        Cookie 通道直接可渲染。
       required: [id, url]
       properties:
         id:
@@ -1321,9 +2579,7 @@ components:
           description: 原价（元），可空。
           example: 399.0
         condition:
-          type: string
-          description: 成色展示文本；枚举值域随批次 2 契约更新定稿。
-          example: 九成新
+          $ref: '#/components/schemas/ProductCondition'
         status:
           $ref: '#/components/schemas/ProductStatus'
         cover:
@@ -1350,6 +2606,121 @@ components:
           type: string
           format: date-time
           description: 发布时间（ISO 8601，+08:00）。
+
+    # -- 商品域数据（批次 2 · v0.3.0） --
+    ProductCondition:
+      type: string
+      enum: [brand_new, as_new, excellent, good, fair]
+      description: |
+        成色：brand_new 全新（未拆封/未使用）/ as_new 99 新（几乎无使用痕迹）/
+        excellent 九成新（轻微使用痕迹）/ good 八成新（少量磨损，功能完好）/
+        fair 七成新及以下（明显使用痕迹）。中文仅出现在展示文案。
+
+    ProductDetail:
+      description: |
+        商品详情完整形态（继承 ProductSummary 全字段）：详情页、发布与
+        编辑成功响应共用。
+      allOf:
+        - $ref: '#/components/schemas/ProductSummary'
+        - type: object
+          required: [description, images, view_count, is_favorited, updated_at]
+          properties:
+            description:
+              type: string
+              description: 商品描述（1–2000 字符）。
+            images:
+              type: array
+              minItems: 1
+              maxItems: 9
+              items:
+                $ref: '#/components/schemas/ImageRef'
+              description: 图集，数组顺序即展示排序。
+            view_count:
+              type: integer
+              minimum: 0
+              description: 浏览量。
+            is_favorited:
+              type: boolean
+              description: 当前用户是否已收藏（管理员恒 false）。
+            updated_at:
+              type: string
+              format: date-time
+              description: 最近更新时间（ISO 8601，+08:00）。
+
+    FavoriteActionData:
+      type: object
+      description: 收藏 / 取消收藏操作结果数据体。
+      required: [favorited, favorite_count]
+      properties:
+        favorited:
+          type: boolean
+          description: 操作后收藏状态（收藏 true / 取消 false）。
+        favorite_count:
+          type: integer
+          minimum: 0
+          description: 该商品最新收藏数。
+
+    # -- 商品域请求体（批次 2 · 字段校验双端同源：后端独立复验，前端表单预检；失败统一 422 / 9001） --
+    ProductCreateInput:
+      type: object
+      description: |
+        商品发布 / 编辑共用请求体（编辑为全量替换；`image_ids` 数组顺序
+        即展示排序）。
+      required: [title, description, price, category_id, condition, image_ids]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: 标题（1–50 字符）。
+        description:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: 描述（1–2000 字符）。
+        price:
+          type: number
+          minimum: 0.01
+          maximum: 99999.99
+          multipleOf: 0.01
+          description: 售价（元，0.01–99999.99，最多两位小数；后端 Decimal 校验，禁 float 直比）。
+        original_price:
+          type: number
+          nullable: true
+          minimum: 0.01
+          maximum: 99999.99
+          multipleOf: 0.01
+          description: 原价（元），可空；填写时约束同 price。
+        category_id:
+          type: integer
+          format: int64
+          description: 分类 id；须为存在且 enabled 的分类（服务端查库复验）。
+        condition:
+          $ref: '#/components/schemas/ProductCondition'
+        campus_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: 校区 id；缺省取发布者校区；填写须为本人学校启用校区。
+        image_ids:
+          type: array
+          minItems: 1
+          maxItems: 9
+          uniqueItems: true
+          items:
+            type: integer
+            format: int64
+          description: 已上传图片 id；须为本人 purpose=product 上传；数组序=排序。
+
+    ProductStatusActionInput:
+      type: object
+      description: 商品上下架请求体（目标状态仅 on_sale / off_sale 二值）。
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [on_sale, off_sale]
+          description: 目标状态：on_sale 上架 / off_sale 下架。
 
     # -- 用户域数据（批次 1） --
     UserProfile:
