@@ -1196,3 +1196,59 @@ class TestDeleteProduct:
             f"{PRODUCTS_URL}/{product.id}", headers=make_auth_header(stranger["id"])
         )
         assert (res.status_code, res.get_json()["code"]) == (404, 9002)
+
+
+class TestUpdateImageReplacementSameSet:
+    """同集替换回归（真机 MySQL 发现）：UOW 先 INSERT 后 DELETE 撞
+    uk_product_image；修复后须先删旧 flush 再插入。"""
+
+    def _two_image_product(self, school_fixtures, user_factory, category_fixtures,
+                           product_factory, seller):
+        product = product_factory(
+            seller, category_fixtures.items[0].id, image_count=2
+        )
+        image_ids = [pi.image_id for pi in product.product_images]
+        return product, image_ids
+
+    def test_update_keep_same_images(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """image_ids 原样保留只改价格 → 200，不撞唯一约束。"""
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product, image_ids = self._two_image_product(
+            school_fixtures, user_factory, category_fixtures, product_factory, seller
+        )
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json=_payload(
+                category_fixtures.items[0].id, image_ids, price=55.0,
+                description="测试描述",
+            ),
+        )
+        assert res.status_code == 200
+        data = res.get_json()["data"]
+        assert [img["id"] for img in data["images"]] == image_ids
+        assert data["price"] == 55.0
+
+    def test_update_reorder_same_images(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """同集重排：数组序即新展示排序。"""
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product, image_ids = self._two_image_product(
+            school_fixtures, user_factory, category_fixtures, product_factory, seller
+        )
+        reordered = list(reversed(image_ids))
+        res = client.put(
+            f"{PRODUCTS_URL}/{product.id}",
+            headers=make_auth_header(seller["id"]),
+            json=_payload(
+                category_fixtures.items[0].id, reordered,
+                title="测试商品", description="测试描述",
+            ),
+        )
+        assert res.status_code == 200
+        assert [img["id"] for img in res.get_json()["data"]["images"]] == reordered

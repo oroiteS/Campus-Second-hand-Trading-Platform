@@ -536,7 +536,12 @@ def update(user: User, product_id: int, payload: dict) -> Product:
     product.category_id = normalized["category_id"]
     product.condition = normalized["condition"]
     product.campus_id = normalized["campus_id"]
-    # image_ids 全量替换（数组序=排序）；delete-orphan 清理旧关联
+    # image_ids 全量替换（数组序=排序）。同表换血须先显式删旧关联并 flush：
+    # 单纯 reassign 依赖 delete-orphan，而 UOW 对同 mapper 先 INSERT 新行
+    # 后 DELETE 旧行，在 uk_product_image 下撞唯一约束（MySQL 1062 实测）。
+    for stale in list(product.product_images):
+        db.session.delete(stale)
+    db.session.flush()
     product.product_images = [
         ProductImage(image_id=image_id, sort_order=i)
         for i, image_id in enumerate(normalized["image_ids"])
