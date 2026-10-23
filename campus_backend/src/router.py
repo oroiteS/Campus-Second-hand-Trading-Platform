@@ -43,3 +43,7 @@ def register_routes(app: Flask) -> None:
     for rule in app.url_map.iter_rules():
         if rule.rule.startswith(SWAGGER_URL):
             rule.strict_slashes = False
+    # b2be2：向量/画像事件订阅接线（幂等；含 Mongo 索引初始化）
+    from src.services.events_subscribers import register_all
+
+    register_all()

@@ -456,7 +456,7 @@ class FakeMongoCollection:
 
     def create_index(self, *keys, **kwargs):
         """幂等 no-op：仅记录签名供断言。"""
-        self.indexes.append((keys, tuple(sorted(kwargs))))
+        self.indexes.append((keys, tuple(sorted(kwargs.items()))))
         return f"idx_{len(self.indexes)}"
 
 
@@ -475,9 +475,12 @@ class FakeMongoDatabase:
         return self[name]
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def fake_mongo(monkeypatch):
-    """monkeypatch ``common.mongo_client.get_db`` 注入内存库桩。"""
+    """monkeypatch ``common.mongo_client.get_db`` 注入内存库桩。
+
+    autouse：router 接线后事件订阅者在全部用例中可达，桩化保证任何
+    用例（含 b2be 存量）都不触真实 Mongo。"""
     from src.common import mongo_client
 
     stub = FakeMongoDatabase()
@@ -557,9 +560,11 @@ class FakeChromaCollection:
             self.metadatas.pop(item_id, None)
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def fake_chroma(monkeypatch):
-    """monkeypatch ``common.chroma_client.get_collection/delete_collection``。"""
+    """monkeypatch ``common.chroma_client.get_collection/delete_collection``。
+
+    autouse 理由同 fake_mongo。"""
     from src.common import chroma_client
 
     stub = FakeChromaCollection()
@@ -592,9 +597,11 @@ def _pseudo_vector(text: str, dim: int) -> list[float]:
     return [v / norm for v in raw]
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def fake_embedding(monkeypatch):
-    """确定性伪 embedding：同文本恒同向量；记录调用文本供断言。"""
+    """确定性伪 embedding：同文本恒同向量；记录调用文本供断言。
+
+    autouse 理由同 fake_mongo（测试一律走桩，不依赖真实侧车）。"""
     from flask import current_app
 
     from src.common import embedding_client
@@ -621,3 +628,19 @@ def fake_embedding(monkeypatch):
     monkeypatch.setattr(embedding_client, "is_available", _is_available)
     monkeypatch.setattr(embedding_client, "active_model", lambda: "fake-embedding-model")
     return _embed
+
+
+@pytest.fixture()
+def wired_events():
+    """重置并注册 b2be2 事件订阅（幂等接线在测试中的可重复形态）。
+
+    router 在 create_app 时已调用 ``register_all``，但个别用例（如
+    test_product_events）会清空 ``events._HANDLERS``；本夹具显式复位
+    注册态，用例结束再清场，避免跨用例泄漏。
+    """
+    from src.services import events_subscribers
+
+    events_subscribers._reset_for_tests()
+    events_subscribers.register_all()
+    yield
+    events_subscribers._reset_for_tests()

@@ -36,6 +36,11 @@ def create_app(config_object: object = None) -> Flask:
 
     register_routes(app)
     _register_error_handlers(app)
+    # b2be2：向量重试补偿线程（默认开；TESTING 跳过）
+    if app.config.get("VECTOR_RETRY_WORKER") and not app.config.get("TESTING"):
+        from src.services.vector_retry_worker import start_worker
+
+        start_worker(app)
     # 启动任务（孤儿商品图清理等）：TESTING 跳过；失败仅日志、不阻断起服务
     if not app.config.get("TESTING"):
         from src.services.upload_service import run_startup_tasks
