@@ -11,6 +11,8 @@ import {
   NotFoundPage,
   ProductDetailPage,
   ProductListPage,
+  MyFavoritesPage,
+  MyProductsPage,
   ProductPublishPage,
   ProfilePage,
   RegisterPage,
@@ -42,6 +44,8 @@ export const router = createBrowserRouter([
         children: [
           { path: 'publish', element: <ProductPublishPage /> },
           { path: 'products/:id/edit', element: <ProductPublishPage /> },
+          { path: 'my/products', element: <MyProductsPage /> },
+          { path: 'my/favorites', element: <MyFavoritesPage /> },
         ],
       },
       {

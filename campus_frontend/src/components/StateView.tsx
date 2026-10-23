@@ -7,7 +7,7 @@ interface StateViewProps {
   error: string | null
   onRetry?: () => void
   empty?: boolean
-  emptyDescription?: string
+  emptyDescription?: ReactNode
   children: ReactNode
 }
 
