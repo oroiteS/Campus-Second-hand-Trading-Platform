@@ -561,6 +561,8 @@ export interface paths {
          *       （message 说明当前状态与允许的操作）；非本校 / 不存在 →
          *       `404 / 9002`（防探测）。
          *     - 重复收藏 → `409 / 9003`。
+         *     - 不能收藏自己发布的商品 → `409 / 9003`（message 说明不能收藏
+         *       自己发布的商品）。
          *     - **收藏关系写库必须成功**；画像更新允许失败重试（异步，需求
          *       「收藏与画像」节）。
          */
@@ -2862,7 +2864,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description 重复收藏（code 9003）或商品状态不允许收藏（code 3001）。 */
+            /** @description 重复收藏 / 收藏自己发布的商品（code 9003）或商品状态不允许收藏（code 3001）。 */
             409: {
                 headers: {
                     [name: string]: unknown;
