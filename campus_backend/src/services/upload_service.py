@@ -57,6 +57,7 @@ def cleanup_orphan_product_images(older_than_hours: int = ORPHAN_DEFAULT_HOURS) 
         .all()
     )
     cleaned = 0
+    paths_to_unlink: list[str] = []
     for image in candidates:
         shared = (
             db.session.query(Image.id)
@@ -66,11 +67,17 @@ def cleanup_orphan_product_images(older_than_hours: int = ORPHAN_DEFAULT_HOURS) 
         )
         db.session.delete(image)
         if not shared:
-            path = Path(current_app.config["UPLOAD_DIR"]) / image.path
-            path.unlink(missing_ok=True)
+            paths_to_unlink.append(image.path)
         cleaned += 1
     if cleaned:
+        # 先 commit（记录删除生效）再删文件：若 commit 失败，文件仍在，
+        # 记录与磁盘状态一致；反向顺序会造成「文件已删、记录仍在」。
         db.session.commit()
+    for rel_path in paths_to_unlink:
+        try:
+            (Path(current_app.config["UPLOAD_DIR"]) / rel_path).unlink(missing_ok=True)
+        except OSError as exc:  # 单个文件删除失败不中断其余清理
+            logger.warning("孤儿文件删除失败（跳过）：%s: %s", rel_path, exc)
     logger.info(
         "孤儿商品图清理完成：删除 %d 条记录（older_than=%dh）", cleaned, older_than_hours
     )
