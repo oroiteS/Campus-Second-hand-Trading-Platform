@@ -1,71 +1,138 @@
-.home-section {
-  margin-bottom: var(--space-8);
-}
+/* 首页（b2 推荐宫格）：入口区（搜索 + 链接）与推荐区头 */
 
-.home-health__degraded {
-  margin-bottom: var(--space-4);
-}
-
-.home-health__meta {
+.home-entry {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+@media (min-width: 768px) {
+  .home-entry {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+}
+
+.home-entry__search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1 1 16rem;
+  max-width: 32rem;
+}
+
+.home-entry__search input[type='search'] {
+  min-height: var(--touch-target);
+  padding: 0 var(--space-3);
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+
+.home-entry__search input[type='search']:focus-visible {
+  outline: var(--focus-outline);
+  outline-offset: var(--focus-offset);
+}
+
+.home-entry__search button {
+  min-height: var(--touch-target);
+  padding: 0 var(--space-4);
+  color: var(--color-on-primary);
+  background-color: var(--color-primary);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.home-entry__search button:hover:not(:disabled) {
+  background-color: var(--color-primary-hover);
+}
+
+.home-entry__search button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (min-width: 768px) {
+  .home-entry__search {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .home-entry__search button {
+    flex: 0 0 auto;
+  }
+}
+
+.home-entry__links {
+  display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-bottom: var(--space-4);
 }
 
-.home-health__checked-at {
+.home-entry__links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-target);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
   color: var(--color-text-secondary);
-  font-size: var(--text-sm);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
-.health-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: var(--space-4);
-  margin: 0 0 var(--space-4);
-  padding: 0;
-  list-style: none;
+.home-entry__links a:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
-.health-card__row {
+.home-entry__links a.home-entry__publish {
+  color: var(--color-on-primary);
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.home-entry__links a.home-entry__publish:hover {
+  color: var(--color-on-primary);
+  background-color: var(--color-primary-hover);
+}
+
+.home-feed-head {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.home-feed-head h2 {
   margin: 0;
 }
 
-.health-card__latency {
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
+.home-feed-head__refresh {
+  min-height: var(--touch-target);
+  padding: 0 var(--space-4);
+  color: var(--color-primary);
+  background: none;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
 }
 
-.health-card__error {
-  margin: var(--space-2) 0 0;
-  color: var(--color-error);
-  font-size: var(--text-sm);
+.home-feed-head__refresh:hover:not(:disabled) {
+  background-color: var(--color-primary-bg);
 }
 
-.health-card__detail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-6);
-  margin: var(--space-3) 0 0;
-}
-
-.health-card__detail dt {
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.health-card__detail dd {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-}
-
-.home-intro__text {
-  max-width: 46rem;
-  color: var(--color-text-secondary);
+.home-feed-head__refresh:disabled {
+  color: var(--color-text-disabled);
+  border-color: var(--color-border-strong);
+  cursor: not-allowed;
 }

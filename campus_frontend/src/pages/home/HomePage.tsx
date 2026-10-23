@@ -1,129 +1,184 @@
-import { Alert, Card, Tag } from 'antd'
-import { getHealth } from '../../api/system'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { getHomeFeed } from '../../api/recommendations'
+import { DegradedBanner } from '../../components/DegradedBanner'
 import { PageHeader } from '../../components/PageHeader'
+import { ProductCard } from '../../components/ProductCard'
 import { StateView } from '../../components/StateView'
-import { useAsyncData } from '../../hooks/useAsyncData'
-import type { HealthData, ServiceHealth } from '../../types'
-import { formatDateTime, formatLatency } from '../../utils/format'
-import { EMBEDDING_MODE_TEXT } from '../../utils/statusText'
+import { useAuthPhase } from '../../stores/authStore'
+import type { HomeFeedData } from '../../types'
+import { errorMessage, isTokenInvalidError } from '../../utils/apiError'
+import { validateSearchQ } from '../../utils/validators'
 import './HomePage.css'
 
-const SERVICE_KEYS = ['mysql', 'mongodb', 'redis', 'chroma'] as const satisfies readonly (keyof HealthData['services'])[]
-
-const SERVICE_LABELS: Record<(typeof SERVICE_KEYS)[number], string> = {
-  mysql: 'MySQL',
-  mongodb: 'MongoDB',
-  redis: 'Redis',
-  chroma: 'Chroma',
-}
-
-function ServiceCard({ name, health }: { name: string; health: ServiceHealth }) {
-  const up = health.status === 'up'
-  return (
-    <Card title={name} size="small" className="health-card">
-      <p className="health-card__row">
-        <Tag color={up ? 'success' : 'error'}>{up ? '正常' : '不可用'}</Tag>
-        <span className="health-card__latency">延迟 {formatLatency(health.latency_ms)}</span>
-      </p>
-      {!up && health.error && (
-        <p className="health-card__error" role="alert">
-          {health.error}
-        </p>
-      )}
-    </Card>
-  )
-}
-
 /**
- * 首页骨架（批次 0）：/api/health 状态面板。
- * 四态齐备：加载（Skeleton + aria-busy）/ 错误（role=alert + 重试）/
- * 空（Empty）/ 正常（服务四卡 + Embedding 模式卡）；degraded 有可见提示。
+ * 首页（b2 原地改造）：个性化推荐宫格（≤40 个，移动 2 列 / ≥1024px 5 列）。
+ * - 「换一批」refresh=true 绕过缓存重算；加载骨架 aria-busy；空态区分管理员；
+ * - degraded 提示条（DegradedBanner）；搜索框与列表页入口导航；
+ * - 冷启动与画像态对前端无感知（mock 与真实接口同构）。
  */
 export function HomePage() {
-  const { data, loading, error, reload } = useAsyncData(getHealth)
+  const phase = useAuthPhase()
+  const navigate = useNavigate()
+
+  const [feed, setFeed] = useState<HomeFeedData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const [searchDraft, setSearchDraft] = useState('')
+  const [searchError, setSearchError] = useState<string | null>(null)
+
+  // 首次加载：初始 loading 已为 true，effect 内仅异步落盘（不同步 setState）
+  useEffect(() => {
+    let cancelled = false
+    getHomeFeed(false)
+      .then((data) => {
+        if (cancelled) return
+        setFeed(data)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        if (!isTokenInvalidError(err)) {
+          setError(errorMessage(err, '推荐加载失败，请稍后重试'))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** 事件侧重载（重试 / 换一批）：可同步置位加载态 */
+  const reload = useCallback((refresh = false) => {
+    if (refresh) {
+      setRefreshing(true)
+    } else {
+      setLoading(true)
+    }
+    setError(null)
+    getHomeFeed(refresh)
+      .then((data) => {
+        setFeed(data)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (!isTokenInvalidError(err)) {
+          setError(errorMessage(err, '推荐加载失败，请稍后重试'))
+        }
+      })
+      .finally(() => {
+        setLoading(false)
+        setRefreshing(false)
+      })
+  }, [])
+
+  function handleSearch(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    const q = searchDraft.trim()
+    if (q === '') {
+      setSearchError('请输入搜索词')
+      return
+    }
+    const invalid = validateSearchQ(q)
+    if (invalid) {
+      setSearchError(invalid)
+      return
+    }
+    setSearchError(null)
+    navigate(`/search?q=${encodeURIComponent(q)}`)
+  }
+
+  const isEmpty = (feed?.items.length ?? 0) === 0
 
   return (
     <div className="page-container">
-      <PageHeader
-        title="校园二手交易平台"
-        description="批次 0 骨架演示：平台服务健康面板（GET /api/health）"
-      />
+      <PageHeader title="校园二手交易平台" description="本校学生自发的二手好物集市" />
 
-      <section className="home-section" aria-labelledby="health-heading">
-        <h2 id="health-heading">服务健康</h2>
+      <div className="home-entry">
+        <form className="home-entry__search" role="search" onSubmit={handleSearch} noValidate>
+          <label htmlFor="home-search-input" className="visually-hidden">
+            搜索商品
+          </label>
+          <input
+            id="home-search-input"
+            type="search"
+            value={searchDraft}
+            onChange={(e) => {
+              setSearchDraft(e.target.value)
+              setSearchError(null)
+            }}
+            placeholder="搜索想要的宝贝，如：机械键盘"
+            aria-invalid={searchError ? true : undefined}
+            aria-describedby={searchError ? 'home-search-error' : undefined}
+          />
+          <button type="submit" disabled={loading}>
+            搜索
+          </button>
+          {searchError && (
+            <p id="home-search-error" className="form-field__error" role="alert">
+              {searchError}
+            </p>
+          )}
+        </form>
+        <div className="home-entry__links">
+          <Link to="/products">全部商品</Link>
+          {phase === 'student' && (
+            <Link to="/publish" className="home-entry__publish">
+              发布商品
+            </Link>
+          )}
+        </div>
+      </div>
+
+      <section aria-labelledby="home-feed-heading">
+        <div className="home-feed-head">
+          <h2 id="home-feed-heading">为你推荐</h2>
+          {phase !== 'admin' && feed != null && feed.items.length > 0 && (
+            <button
+              type="button"
+              className="home-feed-head__refresh"
+              onClick={() => reload(true)}
+              disabled={loading || refreshing}
+              aria-label="换一批推荐商品"
+            >
+              {refreshing ? '更换中…' : '换一批'}
+            </button>
+          )}
+        </div>
+
+        {feed?.degraded && <DegradedBanner reason={feed.degraded_reason} />}
+
         <StateView
           loading={loading}
           error={error}
-          onRetry={reload}
-          empty={!data}
-          emptyDescription="暂无健康数据"
+          onRetry={() => reload()}
+          empty={isEmpty}
+          emptyDescription={
+            phase === 'admin'
+              ? '管理员账号无个性化推荐'
+              : '本校暂无在售商品，等你发布第一件'
+          }
         >
-          {data && (
-            <>
-              {data.status === 'degraded' && (
-                <Alert
-                  className="home-health__degraded"
-                  type="warning"
-                  showIcon
-                  role="alert"
-                  message="平台处于降级模式"
-                  description="部分依赖服务不可用，相关功能可能暂时受限；基础功能不受影响。"
-                />
-              )}
-              <p className="home-health__meta">
-                整体状态：
-                <Tag color={data.status === 'ok' ? 'success' : 'warning'}>
-                  {data.status === 'ok' ? '正常' : '降级'}
-                </Tag>
-                <span className="home-health__checked-at">
-                  探测时间：{formatDateTime(data.checked_at)}
-                </span>
-              </p>
-              <ul className="health-grid">
-                {SERVICE_KEYS.map((key) => (
-                  <li key={key}>
-                    <ServiceCard name={SERVICE_LABELS[key]} health={data.services[key]} />
-                  </li>
-                ))}
-              </ul>
-              <Card
-                title="Embedding 向量服务"
-                size="small"
-                className="health-card health-card--embedding"
-              >
-                <p className="health-card__row">
-                  <Tag color={data.embedding.status === 'up' ? 'success' : 'error'}>
-                    {data.embedding.status === 'up' ? '正常' : '不可用'}
-                  </Tag>
-                  {data.embedding.mode ? (
-                    <Tag color="processing">{EMBEDDING_MODE_TEXT[data.embedding.mode]}</Tag>
-                  ) : (
-                    <Tag color="error">无可用模式</Tag>
-                  )}
-                </p>
-                <dl className="health-card__detail">
-                  <div>
-                    <dt>模型</dt>
-                    <dd>{data.embedding.model}</dd>
-                  </div>
-                  <div>
-                    <dt>向量维度</dt>
-                    <dd>{data.embedding.dim}</dd>
-                  </div>
-                </dl>
-              </Card>
-            </>
+          {feed && (
+            <ul
+              className="product-grid home-feed-grid"
+              aria-busy={refreshing || undefined}
+              aria-label="推荐商品列表"
+            >
+              {feed.items.map((product) => (
+                <li key={product.id}>
+                  <ProductCard product={product} />
+                </li>
+              ))}
+            </ul>
           )}
         </StateView>
-      </section>
-
-      <section className="home-section" aria-labelledby="intro-heading">
-        <h2 id="intro-heading">平台简介</h2>
-        <p className="home-intro__text">
-          面向本校学生的二手交易平台：商品发布与浏览、站内聊天、订单与评价将于后续批次陆续上线。
-          当前为批次 0 前端骨架，可使用右上角「演示登录态」切换 游客 / 未认证学生 / 认证学生 /
-          管理员 四态，验证路由守卫拦截。
-        </p>
       </section>
     </div>
   )

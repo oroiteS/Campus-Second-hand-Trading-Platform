@@ -7,11 +7,13 @@ import './UserLayout.css'
 /**
  * 前台布局：语义 landmark（header / main / footer）+ skip link。
  * 主内容锚点 <main id="main-content">，供跳过导航与 hash 定位。
+ * 导航按四态收敛：登录后可见商品浏览入口；学生独占发布/我的商品/收藏。
  */
 export function UserLayout() {
   const phase = useAuthPhase()
   const user = useAuthStore((s) => s.user)
   const isLoggedIn = phase !== 'guest'
+  const isStudent = phase === 'student'
   const isAdmin = phase === 'admin'
 
   return (
@@ -35,6 +37,31 @@ export function UserLayout() {
                 </NavLink>
               </li>
               {isLoggedIn && (
+                <li>
+                  <NavLink to="/products">商品列表</NavLink>
+                </li>
+              )}
+              {isLoggedIn && (
+                <li>
+                  <NavLink to="/search">搜索</NavLink>
+                </li>
+              )}
+              {isStudent && (
+                <li>
+                  <NavLink to="/publish">发布</NavLink>
+                </li>
+              )}
+              {isStudent && (
+                <li>
+                  <NavLink to="/my/products">我的商品</NavLink>
+                </li>
+              )}
+              {isStudent && (
+                <li>
+                  <NavLink to="/my/favorites">收藏</NavLink>
+                </li>
+              )}
+              {isLoggedIn && !isStudent && (
                 <li>
                   <NavLink to="/certification">校园认证</NavLink>
                 </li>
@@ -71,7 +98,7 @@ export function UserLayout() {
       </main>
 
       <footer className="user-layout__footer">
-        <p>校园二手交易平台 · 批次 0 前端骨架演示</p>
+        <p>校园二手交易平台 · 本校学生二手好物集市</p>
       </footer>
     </div>
   )
