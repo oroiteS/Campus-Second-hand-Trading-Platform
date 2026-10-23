@@ -118,3 +118,6 @@ Desktop.ini
 # embedding model 
 qwen3_embedding_0_6b/
 
+
+# agent 工具记忆目录（终审 D-S-3）
+.workbuddy/
