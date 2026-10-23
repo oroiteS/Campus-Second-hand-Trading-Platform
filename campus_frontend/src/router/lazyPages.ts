@@ -26,6 +26,9 @@ export const AdminDashboardPage = lazy(() =>
 export const ProductListPage = lazy(() =>
   import('../pages/product/ProductListPage').then((m) => ({ default: m.ProductListPage })),
 )
+export const ProductDetailPage = lazy(() =>
+  import('../pages/product/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })),
+)
 export const NotFoundPage = lazy(() =>
   import('../pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
 )

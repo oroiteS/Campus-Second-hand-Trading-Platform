@@ -9,6 +9,7 @@ import {
   HomePage,
   LoginPage,
   NotFoundPage,
+  ProductDetailPage,
   ProductListPage,
   ProfilePage,
   RegisterPage,
@@ -32,6 +33,7 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <HomePage /> },
           { path: 'products', element: <ProductListPage /> },
+          { path: 'products/:id', element: <ProductDetailPage /> },
         ],
       },
       {
