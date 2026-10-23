@@ -269,6 +269,77 @@ class TestDegraded:
         assert set(ids) == {scene.products["a"].id, scene.products["b"].id}
 
 
+class TestAdminScope:
+    def test_admin_search_cross_school_where_only_status(
+        self,
+        app,
+        client,
+        scene,
+        user_factory,
+        product_factory,
+        fake_chroma,
+        fake_embedding,
+        make_auth_header,
+        monkeypatch,
+    ):
+        """S-5：管理员（scope_all）跨校只读——chroma where 仅 status 条件，
+        他校在售商品可达；他校非在售仍被 where 过滤。"""
+        admin = user_factory(
+            username="admin01",
+            role="admin",
+            school_id=scene.school_id,
+            auth_status="approved",
+        )
+        # 他校下架商品：where 仅 status 时也必须被过滤
+        other_seller = {
+            "id": scene.products["d"].seller_id,
+            "school_id": scene.other_school_id,
+            "campus_id": None,
+        }
+        off_sale_other = product_factory(
+            other_seller,
+            scene.cat_digital.id,
+            title="他校下架 E",
+            status="off_sale",
+        )
+
+        qv = _query_vector(app, QUERY)
+        _seed(fake_chroma, scene.products["a"], qv, 0.95, school_id=scene.school_id)
+        _seed(fake_chroma, scene.products["d"], qv, 0.99, school_id=scene.other_school_id)
+        _seed(
+            fake_chroma,
+            off_sale_other,
+            qv,
+            0.98,
+            school_id=scene.other_school_id,
+            status="off_sale",
+        )
+
+        # 捕获 chroma where 实参
+        captured: dict = {}
+        original_query = fake_chroma.query
+
+        def _spy(query_embeddings, n_results=10, where=None):
+            captured["where"] = where
+            return original_query(
+                query_embeddings, n_results=n_results, where=where
+            )
+
+        monkeypatch.setattr(fake_chroma, "query", _spy)
+
+        res = client.get(
+            SEARCH_URL,
+            headers=make_auth_header(admin["id"]),
+            query_string={"q": QUERY},
+        )
+
+        assert res.status_code == 200
+        assert captured["where"] == {"status": "on_sale"}  # 无 school_id 条件
+        ids = [item["id"] for item in res.get_json()["data"]["items"]]
+        # 跨校可达：他校 d（0.99 最相似）排在本校 a 之前；下架 E 被过滤
+        assert ids == [scene.products["d"].id, scene.products["a"].id]
+
+
 class TestValidation:
     def test_q_empty_9001(
         self, client, db_create_all, school_fixtures, user_factory, make_auth_header
