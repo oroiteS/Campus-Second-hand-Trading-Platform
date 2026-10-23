@@ -26,8 +26,8 @@ _EXT_MIME = {
     "png": "image/png",
     "webp": "image/webp",
 }
-# 值域随批次扩展（批次 2 起商品图等），当前与模型 purpose 注释一致
-_PURPOSES = ("avatar", "student_card")
+# 值域随批次扩展（b2 起商品图 product；b4 聊天图复用再扩展），与模型 purpose 注释一致
+_PURPOSES = ("avatar", "student_card", "product")
 
 
 # ---- 内容魔数嗅探（联调 P2 修复）----

@@ -12,6 +12,7 @@ from src.routes import (
     products,
     schools,
     system,
+    uploads,
     users,
 )
 
@@ -28,6 +29,7 @@ def register_routes(app: Flask) -> None:
     app.register_blueprint(products.bp, url_prefix="/api/products")
     app.register_blueprint(favorites.bp, url_prefix="/api")
     app.register_blueprint(categories.bp, url_prefix="/api")
+    app.register_blueprint(uploads.bp, url_prefix="/api")
     # b2be2: search.py / recommendations.py 注册位于其后
     # Swagger UI 蓝图自带 url_prefix=/api/docs（静态资源路由挂在其下）
     app.register_blueprint(create_swagger_ui_blueprint())

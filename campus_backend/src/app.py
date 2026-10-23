@@ -36,6 +36,12 @@ def create_app(config_object: object = None) -> Flask:
 
     register_routes(app)
     _register_error_handlers(app)
+    # 启动任务（孤儿商品图清理等）：TESTING 跳过；失败仅日志、不阻断起服务
+    if not app.config.get("TESTING"):
+        from src.services.upload_service import run_startup_tasks
+
+        with app.app_context():
+            run_startup_tasks()
     return app
 
 
