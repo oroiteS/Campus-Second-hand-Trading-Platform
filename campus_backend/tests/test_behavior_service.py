@@ -191,9 +191,23 @@ class TestMissingProductVector:
         assert len(fake_embedding.calls) == 1  # 现场补算发生
 
     def test_missing_vector_and_embed_failure_skips_profile(
-        self, app, product, viewer, fake_mongo, fake_chroma, fake_embedding
+        self, app, product, viewer, fake_mongo, fake_chroma, fake_embedding, monkeypatch
     ):
+        """探测可用但真实补算失败：画像跳过、流水仍在（异常路径双判定）。"""
+        from src.common import embedding_client
+
+        monkeypatch.setattr(embedding_client, "is_available", lambda: (True, "ok"))
         fake_embedding.fail = True
         behavior_service.record_view(viewer["id"], product)  # 补算失败：跳过
         assert len(_behaviors(fake_mongo).find()) == 1  # 流水仍在
+        assert _profiles(fake_mongo).find_one({"user_id": viewer["id"]}) is None
+
+    def test_embedding_unavailable_skips_backfill_but_logs(
+        self, app, product, viewer, fake_mongo, fake_chroma, fake_embedding
+    ):
+        """S-4：探测不可用即跳过补算（不发起 embed），流水照记、画像跳过。"""
+        fake_embedding.fail = True
+        behavior_service.record_view(viewer["id"], product)
+        assert fake_embedding.calls == []  # 探测失败：补算未发起
+        assert len(_behaviors(fake_mongo).find()) == 1  # 流水照记
         assert _profiles(fake_mongo).find_one({"user_id": viewer["id"]}) is None

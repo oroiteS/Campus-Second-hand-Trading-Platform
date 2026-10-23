@@ -12,7 +12,10 @@
 
 取消收藏（favorited=False）仅记流水、不更新画像——权重公式只会把画像
 拉向商品，没有「拉离」语义（任务卡未定义负向更新，b3 购买接入时再议）。
-商品向量缺失时现场 ``embed_texts`` 补算；补算失败则本次画像更新跳过
+商品向量缺失时先以 ``is_available()`` 快速探测 embedding 可用性（TCP 级
+约 1s 超时），可用才现场 ``embed_texts`` 补算——探测失败直接跳过（流水
+照记、画像跳过、不报错），避免请求线程内最长约 20s 的现场补算阻塞详情
+响应（契约：画像记录不影响响应延迟）；探测可用但补算失败同样跳过
 （向量侧已有重试队列补偿，此处不重复入队）。
 """
 
@@ -41,11 +44,25 @@ def _collections():
 
 
 def _product_vector(product) -> list[float] | None:
-    """取商品向量：Mongo 权威副本优先，缺失时现场补算（失败返回 None）。"""
+    """取商品向量：Mongo 权威副本优先，缺失时探测后现场补算（不可得返回 None）。
+
+    补算前先 ``is_available()`` 快速探测（约 1s 超时）：不可用即跳过
+    补算（流水照记、画像跳过，不报错），避免请求线程内现场 embed（最长
+    约 20s）阻塞详情响应；探测可用但真实调用失败同样跳过（双判定，与
+    search/recommend 降级口径一致）。
+    """
     collection = mongo_client.get_db()["product_vectors"]
     doc = collection.find_one({"product_id": int(product.id)})
     if doc is not None:
         return list(doc["vector"])
+    available, probe_reason = embedding_client.is_available()
+    if not available:
+        logger.warning(
+            "商品向量缺失且 embedding 不可用（%s），画像更新跳过 product_id=%s",
+            probe_reason,
+            product.id,
+        )
+        return None
     try:
         category = product.category
         category_name = category.name if category is not None else ""
