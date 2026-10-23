@@ -1,5 +1,5 @@
 import dayjs from 'dayjs'
-import type { ProfileUpdateInput, UserProfile } from '../../types'
+import type { ProfileUpdateInput, UserProfile, UserSummary } from '../../types'
 import { useAuthStore } from '../../stores/authStore'
 import { delay } from '../../utils/delay'
 import {
@@ -80,6 +80,31 @@ function requireSession(): UserProfile {
 /** 供其他 mock 模块获取当前会话；缺失时同样走「清令牌 + 引导登录」兜底，不静默 */
 export function requireMockCurrentUser(): UserProfile {
   return requireSession()
+}
+
+/**
+ * 商品域准入（契约 403/1004，AC-02 最硬准入线）：会话用户须已通过校园认证
+ * （approved；管理员按契约总则恒 approved）。未认证 → 抛 1004 供页面反馈。
+ */
+export function requireVerifiedSession(): UserProfile {
+  const user = requireSession()
+  if (user.auth_status !== 'approved') {
+    throw new ApiError(1004, '请先完成校园认证', null)
+  }
+  return user
+}
+
+/** UserProfile → 契约 UserSummary 概要（商品池卖家 / 详情卖家卡片） */
+export function toUserSummary(profile: UserProfile): UserSummary {
+  return {
+    id: profile.id,
+    display_name: profile.display_name,
+    nickname: profile.nickname,
+    ...(profile.avatar ? { avatar: { ...profile.avatar } } : {}),
+    credit_score: profile.credit_score ?? null,
+    auth_status: profile.auth_status,
+    role: profile.role,
+  }
 }
 
 /** GET /api/users/me：当前登录用户完整资料 */
