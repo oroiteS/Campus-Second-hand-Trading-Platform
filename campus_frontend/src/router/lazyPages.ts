@@ -38,6 +38,9 @@ export const MyProductsPage = lazy(() =>
 export const MyFavoritesPage = lazy(() =>
   import('../pages/product/MyFavoritesPage').then((m) => ({ default: m.MyFavoritesPage })),
 )
+export const SearchPage = lazy(() =>
+  import('../pages/product/SearchPage').then((m) => ({ default: m.SearchPage })),
+)
 export const NotFoundPage = lazy(() =>
   import('../pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
 )

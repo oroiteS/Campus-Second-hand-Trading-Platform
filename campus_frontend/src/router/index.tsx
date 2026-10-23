@@ -16,6 +16,7 @@ import {
   ProductPublishPage,
   ProfilePage,
   RegisterPage,
+  SearchPage,
 } from './lazyPages'
 
 /**
@@ -37,6 +38,7 @@ export const router = createBrowserRouter([
           { index: true, element: <HomePage /> },
           { path: 'products', element: <ProductListPage /> },
           { path: 'products/:id', element: <ProductDetailPage /> },
+          { path: 'search', element: <SearchPage /> },
         ],
       },
       {
