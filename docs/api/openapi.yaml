@@ -702,8 +702,8 @@ paths:
       summary: 上传头像
       description: |
         需登录。`multipart/form-data` 上传头像，form 字段 `file`：单文件
-        jpg/png/webp，≤ 5 MB。服务端四件套校验（扩展名 + MIME + 大小 +
-        内容哈希改名），落 `uploads/avatar/<年月>/`；旧头像文件保留不删
+        jpg/png/webp，≤ 5 MB。服务端五件套校验（扩展名 + MIME + 大小 +
+        内容魔数嗅探 + 内容哈希改名），落 `uploads/avatar/<年月>/`；旧头像文件保留不删
         （images 表仅增不改，YAGNI）。
 
         - 类型或大小不符 `422 / 9001`，`data.fields.file` 携带原因。
@@ -1425,39 +1425,79 @@ paths:
                               degraded_reason:
                                 type: string
                                 description: 降级原因摘要；正常响应不带。
-              example:
-                code: 0
-                message: ok
-                data:
-                  items:
-                    - id: 101
-                      title: 罗技 K845 机械键盘
-                      price: 199.0
-                      original_price: 399.0
-                      condition: excellent
-                      status: on_sale
-                      cover:
-                        id: 42
-                        url: /api/images/42
-                      favorite_count: 3
-                      category:
-                        id: 1
-                        name: 数码电子
-                      seller:
-                        id: 2
-                        display_name: 小明-示例大学(东校区)
-                        nickname: 小明
-                        auth_status: approved
-                        role: student
-                      campus:
-                        id: 1
-                        school_id: 1
-                        name: 东校区
-                      created_at: '2026-10-21T10:00:00+08:00'
-                  page: 1
-                  page_size: 20
-                  total: 1
-                  pages: 1
+              examples:
+                normal:
+                  summary: 正常（向量召回，按原始相似度降序）
+                  value:
+                    code: 0
+                    message: ok
+                    data:
+                      items:
+                        - id: 101
+                          title: 罗技 K845 机械键盘
+                          price: 199.0
+                          original_price: 399.0
+                          condition: excellent
+                          status: on_sale
+                          cover:
+                            id: 42
+                            url: /api/images/42
+                          favorite_count: 3
+                          category:
+                            id: 1
+                            name: 数码电子
+                          seller:
+                            id: 2
+                            display_name: 小明-示例大学(东校区)
+                            nickname: 小明
+                            auth_status: approved
+                            role: student
+                          campus:
+                            id: 1
+                            school_id: 1
+                            name: 东校区
+                          created_at: '2026-10-21T10:00:00+08:00'
+                      page: 1
+                      page_size: 20
+                      total: 1
+                      pages: 1
+                degraded:
+                  summary: 降级（Embedding/Chroma 不可用，标题 LIKE 匹配）
+                  value:
+                    code: 0
+                    message: ok
+                    data:
+                      items:
+                        - id: 101
+                          title: 罗技 K845 机械键盘
+                          price: 199.0
+                          original_price: 399.0
+                          condition: excellent
+                          status: on_sale
+                          cover:
+                            id: 42
+                            url: /api/images/42
+                          favorite_count: 3
+                          category:
+                            id: 1
+                            name: 数码电子
+                          seller:
+                            id: 2
+                            display_name: 小明-示例大学(东校区)
+                            nickname: 小明
+                            auth_status: approved
+                            role: student
+                          campus:
+                            id: 1
+                            school_id: 1
+                            name: 东校区
+                          created_at: '2026-10-21T10:00:00+08:00'
+                      page: 1
+                      page_size: 20
+                      total: 1
+                      pages: 1
+                      degraded: true
+                      degraded_reason: 向量服务不可用，已降级为标题匹配
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2197,35 +2237,71 @@ paths:
                           degraded_reason:
                             type: string
                             description: 降级原因摘要；正常响应不带。
-              example:
-                code: 0
-                message: ok
-                data:
-                  items:
-                    - id: 105
-                      title: 小米真无线蓝牙耳机 Air2
-                      price: 89.0
-                      original_price: 199.0
-                      condition: as_new
-                      status: on_sale
-                      cover:
-                        id: 50
-                        url: /api/images/50
-                      favorite_count: 1
-                      category:
-                        id: 1
-                        name: 数码电子
-                      seller:
-                        id: 2
-                        display_name: 小明-示例大学(东校区)
-                        nickname: 小明
-                        auth_status: approved
-                        role: student
-                      campus:
-                        id: 1
-                        school_id: 1
-                        name: 东校区
-                      created_at: '2026-10-20T18:30:00+08:00'
+              examples:
+                normal:
+                  summary: 正常（画像召回 32 + 随机补足 8）
+                  value:
+                    code: 0
+                    message: ok
+                    data:
+                      items:
+                        - id: 105
+                          title: 小米真无线蓝牙耳机 Air2
+                          price: 89.0
+                          original_price: 199.0
+                          condition: as_new
+                          status: on_sale
+                          cover:
+                            id: 50
+                            url: /api/images/50
+                          favorite_count: 1
+                          category:
+                            id: 1
+                            name: 数码电子
+                          seller:
+                            id: 2
+                            display_name: 小明-示例大学(东校区)
+                            nickname: 小明
+                            auth_status: approved
+                            role: student
+                          campus:
+                            id: 1
+                            school_id: 1
+                            name: 东校区
+                          created_at: '2026-10-20T18:30:00+08:00'
+                degraded:
+                  summary: 降级（Embedding/Chroma/Mongo 不可用，全随机推荐）
+                  value:
+                    code: 0
+                    message: ok
+                    data:
+                      items:
+                        - id: 105
+                          title: 小米真无线蓝牙耳机 Air2
+                          price: 89.0
+                          original_price: 199.0
+                          condition: as_new
+                          status: on_sale
+                          cover:
+                            id: 50
+                            url: /api/images/50
+                          favorite_count: 1
+                          category:
+                            id: 1
+                            name: 数码电子
+                          seller:
+                            id: 2
+                            display_name: 小明-示例大学(东校区)
+                            nickname: 小明
+                            auth_status: approved
+                            role: student
+                          campus:
+                            id: 1
+                            school_id: 1
+                            name: 东校区
+                          created_at: '2026-10-20T18:30:00+08:00'
+                      degraded: true
+                      degraded_reason: 向量服务不可用，已降级为随机推荐
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
