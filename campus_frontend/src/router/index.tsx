@@ -1,7 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 import { AdminLayout } from '../layouts/AdminLayout'
 import { UserLayout } from '../layouts/UserLayout'
-import { GuestOnly, RequireAdmin, RequireAuth, RequireVerified } from './guards'
+import { GuestOnly, RequireAdmin, RequireAuth, RequireStudent, RequireVerified } from './guards'
 import {
   AdminDashboardPage,
   CertificationPage,
@@ -11,6 +11,7 @@ import {
   NotFoundPage,
   ProductDetailPage,
   ProductListPage,
+  ProductPublishPage,
   ProfilePage,
   RegisterPage,
 } from './lazyPages'
@@ -34,6 +35,13 @@ export const router = createBrowserRouter([
           { index: true, element: <HomePage /> },
           { path: 'products', element: <ProductListPage /> },
           { path: 'products/:id', element: <ProductDetailPage /> },
+        ],
+      },
+      {
+        element: <RequireStudent />,
+        children: [
+          { path: 'publish', element: <ProductPublishPage /> },
+          { path: 'products/:id/edit', element: <ProductPublishPage /> },
         ],
       },
       {

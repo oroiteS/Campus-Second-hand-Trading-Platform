@@ -202,11 +202,32 @@
 
 /* ---- 发布 / 编辑 ---- */
 
+.publish-alert {
+  margin-bottom: var(--space-4);
+  max-width: 40rem;
+}
+
 .publish-form {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   max-width: 40rem;
+}
+
+.publish-form__price-row,
+.publish-form__select-row {
+  display: grid;
+  gap: var(--space-4);
+}
+
+@media (min-width: 768px) {
+  .publish-form__price-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .publish-form__select-row {
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  }
 }
 
 /* ---- 我的商品 / 收藏 ---- */

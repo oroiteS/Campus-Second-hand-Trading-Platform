@@ -29,6 +29,9 @@ export const ProductListPage = lazy(() =>
 export const ProductDetailPage = lazy(() =>
   import('../pages/product/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })),
 )
+export const ProductPublishPage = lazy(() =>
+  import('../pages/product/ProductPublishPage').then((m) => ({ default: m.ProductPublishPage })),
+)
 export const NotFoundPage = lazy(() =>
   import('../pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
 )
