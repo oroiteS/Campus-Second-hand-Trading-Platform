@@ -17,7 +17,7 @@ b2be2 追加三桩（全手写、不引新包；b3/b4 可复用，接口形态�
   get_collection`` / ``delete_collection`` 注入。置 ``stub.fail = True``
   后 get_collection 抛 ``ConnectionError``。
 - ``fake_embedding``：确定性伪向量 ``fake_embedding(texts) ->
-  list[list[float]]``——按文本首字符 hash 生成 1024 维（EMBEDDING_DIM）
+  list[list[float]]``——按文本全文 hash 生成 1024 维（EMBEDDING_DIM）
   单位向量，同文本恒同向量、异文本异向量；monkeypatch
   ``common.embedding_client`` 的 ``embed_texts`` / ``is_available`` /
   ``active_model``（模型名固定 ``fake-embedding-model``）。置
@@ -26,6 +26,7 @@ b2be2 追加三桩（全手写、不引新包；b3/b4 可复用，接口形态�
 """
 
 import base64
+import hashlib
 import io
 import math
 from decimal import Decimal
@@ -587,8 +588,8 @@ def fake_chroma(monkeypatch):
 
 
 def _pseudo_vector(text: str, dim: int) -> list[float]:
-    """确定性伪向量：首字符 hash 决定相位，正弦叠加后归一化为单位向量。"""
-    seed = ord(text[0]) if text else 0
+    """确定性伪向量：全文 SHA-256 hash 决定相位，正弦叠加后归一化为单位向量。"""
+    seed = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big")
     raw = [
         math.sin(seed * 0.37 + i * 0.11) + 0.05 * ((seed + i) % 5 - 2)
         for i in range(dim)
