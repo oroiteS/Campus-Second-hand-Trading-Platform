@@ -13,6 +13,7 @@ from src.model import Favorite, Product, db, iso8
 from src.services import events
 from src.services.product_service import (
     _STATUS_LABELS,
+    _SUMMARY_LOADS,
     _admin_rejected,
     _product_not_found,
     invalidate_detail_cache,
@@ -92,10 +93,15 @@ def unfavorite(user, product_id: int) -> dict:
 
 
 def my_favorites(user, page: int, page_size: int) -> dict:
-    """收藏列表：join 商品排除 deleted，按收藏时间倒序；条目含 favorited_at。"""
+    """收藏列表：join 商品排除 deleted，按收藏时间倒序；条目含 favorited_at。
+
+    对返回的 Product 套用与商品列表同一组 ``_SUMMARY_LOADS`` 预载，
+    规避 ``to_summary_dict`` 逐行懒加载的 N+1（分页语义与排序不变）。
+    """
     query = (
         db.session.query(Favorite, Product)
         .join(Product, Favorite.product_id == Product.id)
+        .options(*_SUMMARY_LOADS)
         .filter(Favorite.user_id == user.id, Product.status != "deleted")
         .order_by(Favorite.created_at.desc(), Favorite.id.desc())
     )

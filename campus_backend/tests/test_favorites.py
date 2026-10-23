@@ -213,6 +213,66 @@ class TestMyFavorites:
         res = client.get(MINE_URL, headers=make_auth_header(b2["id"]))
         assert res.get_json()["data"]["total"] == 0
 
+    def test_mine_summary_fields_complete(
+        self, client, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory, make_auth_header,
+    ):
+        """条目为完整 ProductSummary 形态 + favorited_at（概要序列化不缺段）。"""
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        product = product_factory(seller, category_fixtures.items[0].id, title="好物")
+        buyer = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        headers = make_auth_header(buyer["id"])
+        assert client.post(FAVORITE_URL.format(pid=product.id), headers=headers).status_code == 200
+        item = client.get(MINE_URL, headers=headers).get_json()["data"]["items"][0]
+        assert set(item) >= {
+            "id", "title", "price", "original_price", "condition", "status",
+            "cover", "favorite_count", "category", "seller", "campus",
+            "created_at", "favorited_at",
+        }
+        assert item["id"] == product.id
+        assert item["title"] == "好物"
+        assert item["seller"]["id"] == seller["id"]
+        assert item["favorited_at"].endswith("+08:00")
+
+    def test_mine_no_n1_and_orders_by_favorited_at(
+        self, client, app, db_create_all, school_fixtures, user_factory,
+        category_fixtures, product_factory, make_auth_header,
+    ):
+        """favorited_at 倒序稳定 + 概要序列化无 N+1（SQL 语句数不随条目数线性增长）。"""
+        from sqlalchemy import event
+
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        cat = category_fixtures.items[0].id
+        products = [
+            product_factory(seller, cat, title=f"商品{i}") for i in range(5)
+        ]
+        buyer = _verified(user_factory, school_fixtures.multi, school_fixtures.west)
+        headers = make_auth_header(buyer["id"])
+        # 按顺序收藏 → 列表应为倒序（最后收藏的在前）
+        for p in products:
+            assert client.post(FAVORITE_URL.format(pid=p.id), headers=headers).status_code == 200
+
+        stmt_count = 0
+
+        def _count(conn, cursor, statement, parameters, context, executemany):
+            nonlocal stmt_count
+            stmt_count += 1
+
+        engine = app.extensions["sqlalchemy"].engine
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            res = client.get(MINE_URL, headers=headers)
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+        data = res.get_json()["data"]
+        assert data["total"] == 5
+        assert [i["id"] for i in data["items"]] == [p.id for p in reversed(products)]
+        # N+1 规避：概要序列化所需关联已 selectinload 预载。
+        # 语句数上限取经验常数（主查询 + count + 少量固定预载批查），
+        # 若逐行懒加载则 ≈ 4N+1 ≥ 21，远超此上限。
+        assert stmt_count <= 10
+
     def test_mine_admin_empty(
         self, client, db_create_all, user_factory, make_auth_header
     ):
