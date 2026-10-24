@@ -47,7 +47,8 @@ KEYWORD_MAX = 100
 IMAGE_MIN, IMAGE_MAX = 1, 9
 
 # 商品状态中文标签（仅出现在 message 文案）
-_STATUS_LABELS = {
+# 公开名（跨 service 只读消费，如 favorite_service 的 3001 文案）。
+STATUS_LABELS = {
     "on_sale": "上架",
     "trading": "交易中",
     "sold": "已售",
@@ -63,12 +64,12 @@ def _fields_error(fields: dict[str, str]) -> ApiError:
     return ApiError(ErrorCode.VALIDATION_ERROR, data={"fields": fields})
 
 
-def _product_not_found() -> ApiError:
+def product_not_found() -> ApiError:
     """防探测统一口径：不存在 / 他校 / 越权一律 404/9002，不区分三种情况。"""
     return ApiError(ErrorCode.NOT_FOUND, message="商品不存在")
 
 
-def _admin_rejected(action: str) -> ApiError:
+def admin_rejected(action: str) -> ApiError:
     """管理员无交易能力（发布/编辑/收藏/上传），与 b1 认证提交口径一致。"""
     return ApiError(ErrorCode.CONFLICT, message=f"管理员无交易能力，不能{action}")
 
@@ -190,7 +191,7 @@ def create(user: User, payload: dict) -> Product:
     （敏感词库 b5 接入，钩子占位）。
     """
     if user.role == "admin":
-        raise _admin_rejected("发布商品")
+        raise admin_rejected("发布商品")
     normalized = _validate_product_payload(user, payload)
     product = Product(
         seller_id=user.id,
@@ -226,13 +227,13 @@ def _get_visible_product(viewer: User, product_id: int) -> Product:
     """
     product = db.session.get(Product, product_id)
     if product is None or product.status in ("sold", "deleted"):
-        raise _product_not_found()
+        raise product_not_found()
     is_admin = viewer.role == "admin"
     if product.status == "on_sale":
         if not is_admin and product.school_id != viewer.school_id:
-            raise _product_not_found()
+            raise product_not_found()
     elif product.seller_id != viewer.id and not is_admin:
-        raise _product_not_found()
+        raise product_not_found()
     return product
 
 
@@ -318,7 +319,7 @@ def get_detail(viewer: User, product_id: int) -> dict:
 # ---- 列表 / 我的商品 ----
 
 # 概要序列化所需的关联预载（列表 N+1 规避）
-_SUMMARY_LOADS = (
+SUMMARY_LOADS = (
     selectinload(Product.product_images).selectinload(ProductImage.image),
     selectinload(Product.seller).selectinload(User.avatar),
     selectinload(Product.category),
@@ -343,7 +344,7 @@ def _parse_filter_decimal(raw: object, field: str, fields: dict[str, str]) -> De
     return value
 
 
-def _validate_list_filters(filters: dict) -> dict:
+def validate_list_filters(filters: dict) -> dict:
     """列表筛选校验（条件组合 price_min ≤ price_max → 9001 fields）。"""
     fields: dict[str, str] = {}
     category_id = filters.get("category_id")
@@ -426,7 +427,7 @@ def list_on_sale(filters: dict, page: int, page_size: int) -> dict:
 
     管理员 scope_all 跨校全量；学生自动注入本校过滤。
     """
-    normalized = _validate_list_filters(filters)
+    normalized = validate_list_filters(filters)
     query = scoped_query(Product).filter(Product.status == "on_sale")
     if normalized["category_id"] is not None:
         query = query.filter(Product.category_id == normalized["category_id"])
@@ -447,7 +448,7 @@ def list_on_sale(filters: dict, page: int, page_size: int) -> dict:
         "price_desc": Product.price.desc(),
     }[normalized["sort"]]
     query = query.order_by(order, Product.id.desc())
-    return _paginate(query, page, page_size, _SUMMARY_LOADS)
+    return _paginate(query, page, page_size, SUMMARY_LOADS)
 
 
 def mine(user: User, status: str | None, page: int, page_size: int) -> dict:
@@ -455,6 +456,11 @@ def mine(user: User, status: str | None, page: int, page_size: int) -> dict:
 
     status 缺省返回除 deleted 外全部；显式传某状态（含 deleted）则按该
     状态过滤——本人数据无探测面，按请求如实返回。
+
+    口径澄清（评审 S-9，不改行为）：``status=deleted`` 是契约
+    ``ProductStatus`` 的合法枚举值，查询恒以 ``seller_id = 本人`` 为前置
+    条件，返回的只是本人已删商品，不构成越权、不泄露他人数据，故按请求
+    如实返回而不额外 404/9001。
     """
     if status not in (None, "") and status not in PRODUCT_STATUSES:
         raise _fields_error({"status": "商品状态取值非法"})
@@ -464,7 +470,7 @@ def mine(user: User, status: str | None, page: int, page_size: int) -> dict:
     else:
         query = query.filter(Product.status != "deleted")
     query = query.order_by(Product.created_at.desc(), Product.id.desc())
-    return _paginate(query, page, page_size, _SUMMARY_LOADS)
+    return _paginate(query, page, page_size, SUMMARY_LOADS)
 
 
 # ---- 编辑 / 上下架 / 删除 ----
@@ -487,7 +493,7 @@ def _own_product_or_404(user: User, product_id: int) -> Product:
         or product.seller_id != user.id
         or product.school_id != user.school_id
     ):
-        raise _product_not_found()
+        raise product_not_found()
     return product
 
 
@@ -498,15 +504,15 @@ def update(user: User, product_id: int, payload: dict) -> Product:
     集合——向量订阅方不关心图片）。失效 detail 缓存。
     """
     if user.role == "admin":
-        raise _admin_rejected("编辑商品")
+        raise admin_rejected("编辑商品")
     product = _own_product_or_404(user, product_id)
     if product.status == "deleted":
-        raise _product_not_found()
+        raise product_not_found()
     if product.status not in _EDITABLE_STATUSES:
         raise ApiError(
             ErrorCode.PRODUCT_STATUS_CONFLICT,
             message=(
-                f"商品当前状态为{_STATUS_LABELS[product.status]}，不允许编辑；"
+                f"商品当前状态为{STATUS_LABELS[product.status]}，不允许编辑；"
                 "仅上架或已下架商品可编辑"
             ),
         )
@@ -561,12 +567,12 @@ def change_status(user: User, product_id: int, new_status: str) -> Product:
         raise _fields_error({"status": "目标状态必须为 on_sale 或 off_sale"})
     product = _own_product_or_404(user, product_id)
     if product.status == "deleted":
-        raise _product_not_found()
+        raise product_not_found()
     if product.status not in _EDITABLE_STATUSES:
         raise ApiError(
             ErrorCode.PRODUCT_STATUS_CONFLICT,
             message=(
-                f"商品当前状态为{_STATUS_LABELS[product.status]}，"
+                f"商品当前状态为{STATUS_LABELS[product.status]}，"
                 "仅上架或已下架商品可执行上下架"
             ),
         )
@@ -589,12 +595,12 @@ def delete(user: User, product_id: int) -> None:
     """软删：status=deleted，图片与收藏记录保留（不可见）；emit DELETED(id)。"""
     product = _own_product_or_404(user, product_id)
     if product.status == "deleted":
-        raise _product_not_found()
+        raise product_not_found()
     if product.status not in _DELETABLE_STATUSES:
         raise ApiError(
             ErrorCode.PRODUCT_STATUS_CONFLICT,
             message=(
-                f"商品当前状态为{_STATUS_LABELS[product.status]}，不允许删除；"
+                f"商品当前状态为{STATUS_LABELS[product.status]}，不允许删除；"
                 "仅上架或已下架商品可删除"
             ),
         )
@@ -611,10 +617,19 @@ def delete(user: User, product_id: int) -> None:
 def get_on_sale_by_ids(
     school_id: int | None, ids: list[int], *, scope_all: bool = False
 ) -> list[Product]:
-    """按传入 id 顺序返回本校（或 scope_all 全部）在售商品；供向量召回后精筛。"""
+    """按传入 id 顺序返回本校（或 scope_all 全部）在售商品；供向量召回后精筛。
+
+    与列表同一组 ``SUMMARY_LOADS`` 预载：召回 90 件时 ``to_summary_dict``
+    不再逐件懒加载 seller(.avatar)/category/campus/product_images(.image)
+    （否则 90 件 ≈ 360 条额外 SELECT，撞 NFR-01/04 预算）。
+    """
     if not ids:
         return []
-    stmt = db.select(Product).where(Product.id.in_(ids), Product.status == "on_sale")
+    stmt = (
+        db.select(Product)
+        .options(*SUMMARY_LOADS)
+        .where(Product.id.in_(ids), Product.status == "on_sale")
+    )
     if not scope_all:
         stmt = stmt.where(Product.school_id == school_id)
     products = db.session.execute(stmt).scalars().all()
@@ -625,7 +640,10 @@ def get_on_sale_by_ids(
 def list_on_sale_random(
     school_id: int | None, exclude_ids: list[int], limit: int, *, scope_all: bool = False
 ) -> list[Product]:
-    """随机补足：id 池抽样（量小池浅，避免方言差异的 RAND()）。"""
+    """随机补足：id 池抽样（量小池浅，避免方言差异的 RAND()）。
+
+    取实体时套同一组 ``SUMMARY_LOADS`` 预载（推荐 40 件冷启动路径无 N+1）。
+    """
     if limit <= 0:
         return []
     stmt = db.select(Product.id).where(Product.status == "on_sale").limit(500)
@@ -638,7 +656,12 @@ def list_on_sale_random(
     chosen = pool[:limit]
     if not chosen:
         return []
-    products = db.session.query(Product).filter(Product.id.in_(chosen)).all()
+    products = (
+        db.session.query(Product)
+        .options(*SUMMARY_LOADS)
+        .filter(Product.id.in_(chosen))
+        .all()
+    )
     by_id = {p.id: p for p in products}
     return [by_id[i] for i in chosen if i in by_id]
 

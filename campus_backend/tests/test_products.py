@@ -49,6 +49,33 @@ def _create_via_api(client, headers, payload):
     return client.post(PRODUCTS_URL, headers=headers, json=payload)
 
 
+def _select_count(app, call):
+    """在独立 app context 内执行 ``call``，返回（SELECT 条数, 返回值）。
+
+    SQLAlchemy ``before_cursor_execute`` 事件统计：用独立上下文是为了拿到
+    空 identity map 的新 session，确保懒加载真的会发 SQL（否则预载是否
+    生效无法观测）。
+    """
+    from sqlalchemy import event
+
+    from src.model import db
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    with app.app_context():
+        engine = db.engine
+        event.listen(engine, "before_cursor_execute", _record)
+        try:
+            result = call()
+        finally:
+            event.remove(engine, "before_cursor_execute", _record)
+    return len(statements), result
+
+
 # ============================================================
 # 发布
 # ============================================================
@@ -855,6 +882,61 @@ class TestB2be2HelperFunctions:
                 None, [p3.id, p1.id], scope_all=True
             )
             assert [p.id for p in all_rows] == [p3.id, p1.id]  # 同样按传入序
+
+    def test_get_on_sale_by_ids_no_n_plus_1(
+        self, app, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory,
+    ):
+        """S-1：召回取数套用 ``SUMMARY_LOADS`` 预载，序列化不再 N+1。
+
+        30 件逐件 ``to_summary_dict``（消费 seller/.avatar、category、
+        campus、product_images/.image）触发的 SELECT 条数须与 3 件时相同，
+        且不超过预载组数上限——商品数不参与线性放大。
+        """
+        from src.services import product_service
+
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        cat = category_fixtures.items[0].id
+        ids = [product_factory(seller, cat).id for _ in range(30)]
+
+        def _serialize(subset: list[int]) -> list[dict]:
+            rows = product_service.get_on_sale_by_ids(school_fixtures.multi.id, subset)
+            return [p.to_summary_dict() for p in rows]
+
+        few_count, few_items = _select_count(app, lambda: _serialize(ids[:3]))
+        many_count, many_items = _select_count(app, lambda: _serialize(ids))
+
+        assert len(few_items) == 3
+        assert len(many_items) == 30
+        # 未预载时 30 件 ≈ 1 + 30×4 条懒加载；预载后恒为固定组数（实测 6），
+        # 与商品数无关——用等量对比直接证明「不随数量线性增长」。
+        assert many_count <= few_count + 1
+        assert few_count < 10
+
+    def test_list_on_sale_random_no_n_plus_1(
+        self, app, db_create_all, school_fixtures, user_factory, category_fixtures,
+        product_factory,
+    ):
+        """S-1：随机补足路径同样预载（推荐冷启动 40 件无 N+1）。"""
+        from src.services import product_service
+
+        seller = _verified(user_factory, school_fixtures.multi, school_fixtures.east)
+        cat = category_fixtures.items[0].id
+        for _ in range(30):
+            product_factory(seller, cat)
+
+        def _serialize(limit: int) -> list[dict]:
+            rows = product_service.list_on_sale_random(school_fixtures.multi.id, [], limit)
+            return [p.to_summary_dict() for p in rows]
+
+        few_count, few_items = _select_count(app, lambda: _serialize(3))
+        many_count, many_items = _select_count(app, lambda: _serialize(30))
+
+        assert len(few_items) == 3
+        assert len(many_items) == 30
+        # id 池 1 次 + 预载组；未预载时 30 件会退化为 1 + 30×4 条。
+        assert many_count <= few_count + 1
+        assert few_count < 10
 
     def test_list_on_sale_random(
         self, app, db_create_all, school_fixtures, user_factory, category_fixtures,

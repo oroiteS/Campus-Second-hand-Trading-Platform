@@ -12,11 +12,11 @@ from src.common.errors import ApiError, ErrorCode
 from src.model import Favorite, Product, db, iso8
 from src.services import events
 from src.services.product_service import (
-    _STATUS_LABELS,
-    _SUMMARY_LOADS,
-    _admin_rejected,
-    _product_not_found,
+    STATUS_LABELS,
+    SUMMARY_LOADS,
+    admin_rejected,
     invalidate_detail_cache,
+    product_not_found,
 )
 
 
@@ -27,20 +27,20 @@ def _scoped_product_or_404(user, product_id: int) -> Product:
     """
     product = db.session.get(Product, product_id)
     if product is None or product.school_id != user.school_id:
-        raise _product_not_found()
+        raise product_not_found()
     return product
 
 
 def favorite(user, product_id: int) -> dict:
     """收藏：仅本校 on_sale、非自家商品；重复 → 9003（uk 兜底）；emit FAVORITE_CHANGED。"""
     if user.role == "admin":
-        raise _admin_rejected("收藏商品")
+        raise admin_rejected("收藏商品")
     product = _scoped_product_or_404(user, product_id)
     if product.status != "on_sale":
         raise ApiError(
             ErrorCode.PRODUCT_STATUS_CONFLICT,
             message=(
-                f"商品当前状态为{_STATUS_LABELS[product.status]}，仅上架商品可收藏"
+                f"商品当前状态为{STATUS_LABELS[product.status]}，仅上架商品可收藏"
             ),
         )
     if product.seller_id == user.id:
@@ -69,12 +69,18 @@ def favorite(user, product_id: int) -> dict:
 
 
 def unfavorite(user, product_id: int) -> dict:
-    """取消收藏（幂等）：无记录直接返回当前计数；仅实际删除时 emit。"""
+    """取消收藏（幂等）：无记录直接返回当前计数；仅实际删除时 emit。
+
+    口径澄清（评审 S-10，不改行为）：对 ``status=deleted`` 的商品返回
+    404/9002 符合契约"商品不存在"语义（已删商品对所有人不可见，含收藏
+    人），故不会走到删除收藏记录一步；该收藏行成为不可见孤儿（列表侧
+    join 已排除 deleted，不会展示），属可接受的 YAGNI 遗留，不在此清理。
+    """
     if user.role == "admin":
-        raise _admin_rejected("收藏商品")
+        raise admin_rejected("收藏商品")
     product = _scoped_product_or_404(user, product_id)
     if product.status == "deleted":
-        raise _product_not_found()  # 已删商品不可见（防探测口径一致）
+        raise product_not_found()  # 已删商品不可见（防探测口径一致）
     record = (
         db.session.query(Favorite)
         .filter(Favorite.user_id == user.id, Favorite.product_id == product.id)
@@ -98,13 +104,13 @@ def unfavorite(user, product_id: int) -> dict:
 def my_favorites(user, page: int, page_size: int) -> dict:
     """收藏列表：join 商品排除 deleted，按收藏时间倒序；条目含 favorited_at。
 
-    对返回的 Product 套用与商品列表同一组 ``_SUMMARY_LOADS`` 预载，
+    对返回的 Product 套用与商品列表同一组 ``SUMMARY_LOADS`` 预载，
     规避 ``to_summary_dict`` 逐行懒加载的 N+1（分页语义与排序不变）。
     """
     query = (
         db.session.query(Favorite, Product)
         .join(Product, Favorite.product_id == Product.id)
-        .options(*_SUMMARY_LOADS)
+        .options(*SUMMARY_LOADS)
         .filter(Favorite.user_id == user.id, Product.status != "deleted")
         .order_by(Favorite.created_at.desc(), Favorite.id.desc())
     )

@@ -16,8 +16,8 @@ def get_with_access_check(image_id: int, current_user: "User") -> Image:
     """按 id 取图并做访问控制（NFR-08）。
 
     ``student_card`` 仅上传者本人与管理员可读；越权与不存在一律
-    404/9002，不区分两种情况（防探测）。其余用途（本批次 avatar）
-    登录即可读。
+    404/9002，不区分两种情况（防探测）。其余用途（``avatar`` /
+    ``product`` 同口径）登录即可读。
     """
     image = db.session.get(Image, image_id)
     if image is None:

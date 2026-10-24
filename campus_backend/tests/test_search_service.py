@@ -203,6 +203,39 @@ class TestVectorPath:
         )
         assert not any("search" in key for key in fake_redis.store)  # 结果不写缓存
 
+    def test_recall_limit_90_passed_to_chroma(
+        self,
+        app,
+        client,
+        scene,
+        fake_mongo,
+        fake_chroma,
+        fake_embedding,
+        make_auth_header,
+        monkeypatch,
+    ):
+        """召回上限 90 须原样透传给 Chroma（60×1.5 过滤损耗余量，当前无用例）。"""
+        qv = _query_vector(app, QUERY)
+        _seed(fake_chroma, scene.products["a"], qv, 0.9, school_id=scene.school_id)
+
+        captured: dict = {}
+        original_query = fake_chroma.query
+
+        def _spy(query_embeddings, n_results=10, where=None):
+            captured["n_results"] = n_results
+            return original_query(query_embeddings, n_results=n_results, where=where)
+
+        monkeypatch.setattr(fake_chroma, "query", _spy)
+
+        res = client.get(
+            SEARCH_URL,
+            headers=make_auth_header(scene.viewer["id"]),
+            query_string={"q": QUERY},
+        )
+
+        assert res.status_code == 200
+        assert captured["n_results"] == 90
+
 
 class TestDegraded:
     def test_embedding_down_like_fallback(
@@ -298,6 +331,87 @@ class TestDegraded:
         assert data["degraded"] is True
         ids = [item["id"] for item in data["items"]]
         assert set(ids) == {scene.products["a"].id, scene.products["b"].id}
+
+    def test_chroma_down_with_price_filter(
+        self,
+        app,
+        client,
+        scene,
+        db_create_all,
+        fake_mongo,
+        fake_chroma,
+        fake_embedding,
+        fake_redis,
+        make_auth_header,
+    ):
+        """Chroma 真实调用异常 × 价格筛选（N-1 回归守护）。
+
+        降级走 LIKE + 原始 str 价格（由 list_on_sale 一次校验归一化），
+        结果仍须按价格区间过滤，不得退化为"全量标题命中"。
+        """
+        qv = _query_vector(app, QUERY)
+        _seed(fake_chroma, scene.products["a"], qv, 0.95, school_id=scene.school_id)
+        _seed(fake_chroma, scene.products["b"], qv, 0.75, school_id=scene.school_id)
+        fake_chroma.fail["fail"] = True  # get_collection 抛异常 → 降级
+
+        res = client.get(
+            SEARCH_URL,
+            headers=make_auth_header(scene.viewer["id"]),
+            query_string={"q": "键盘", "price_min": "50", "price_max": "200"},
+        )
+
+        assert res.status_code == 200
+        data = res.get_json()["data"]
+        assert data["degraded"] is True
+        ids = [item["id"] for item in data["items"]]
+        # 标题命中 a(100)/b(500)；价格区间 [50, 200] 仅 a 存活
+        assert ids == [scene.products["a"].id]
+        for item in data["items"]:
+            assert Decimal("50") <= Decimal(item["price"]) <= Decimal("200")
+
+    def test_degraded_reason_hides_internal_details(
+        self,
+        app,
+        client,
+        scene,
+        db_create_all,
+        fake_mongo,
+        fake_chroma,
+        fake_embedding,
+        fake_redis,
+        make_auth_header,
+        monkeypatch,
+    ):
+        """S-6：``degraded_reason`` 只回固定文案，不携带异常/主机/端口细节。"""
+        from src.common import embedding_client
+
+        monkeypatch.setattr(
+            embedding_client,
+            "is_available",
+            lambda: (False, "ConnectionError: 10.9.9.9:8010 refused"),
+        )
+
+        res = client.get(
+            SEARCH_URL,
+            headers=make_auth_header(scene.viewer["id"]),
+            query_string={"q": "键盘"},
+        )
+
+        assert res.status_code == 200
+        data = res.get_json()["data"]
+        assert data["degraded"] is True
+        reason = data["degraded_reason"]
+        assert reason  # 契约字段仍为非空字符串
+        leaks = (
+            "Exception",
+            "Error",
+            "10.9.9.9",
+            "8010",
+            "127.0.0.1",
+            "Chroma",
+            "chroma",
+        )
+        assert not any(x in reason for x in leaks), reason
 
 
 class TestAdminScope:
@@ -401,3 +515,42 @@ class TestValidation:
         )
         assert res.status_code == 403
         assert res.get_json()["code"] == 1004
+
+    def test_invalid_filter_9001_before_probe(
+        self,
+        client,
+        db_create_all,
+        school_fixtures,
+        user_factory,
+        make_auth_header,
+        monkeypatch,
+        caplog,
+    ):
+        """W-2：筛选校验前置——非法筛选直接 9001，不做探活、不打降级日志。"""
+        from src.common import embedding_client
+
+        probes: list[int] = []
+
+        def _is_available():
+            probes.append(1)
+            return True, "ok"
+
+        monkeypatch.setattr(embedding_client, "is_available", _is_available)
+        viewer = user_factory(
+            username="viewer01",
+            school_id=school_fixtures.multi.id,
+            auth_status="approved",
+        )
+
+        with caplog.at_level("INFO", logger="src.services.search_service"):
+            res = client.get(
+                SEARCH_URL,
+                headers=make_auth_header(viewer["id"]),
+                query_string={"q": "键盘", "price_min": "abc"},
+            )
+
+        assert res.status_code == 422
+        assert res.get_json()["code"] == 9001
+        assert "price_min" in res.get_json()["data"]["fields"]
+        assert probes == []  # 未触达 embedding 探活
+        assert not any("搜索降级" in r.message for r in caplog.records)

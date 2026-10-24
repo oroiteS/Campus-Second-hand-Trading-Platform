@@ -8,9 +8,11 @@
 （召回序）保序分页。结果不写缓存（条件组合爆炸）。
 
 **降级**（``is_available`` + 异常双判定）：MySQL ``LIKE %q%`` 标题匹配
-（created_at 倒序），响应附加 ``degraded: true`` + ``degraded_reason``，
-info 日志。LIKE 与列表 keyword 同口径：``%``/``_`` 不转义直配（参数化
-无注入面，既有备案口径，b2be 评审记录）。
+（created_at 倒序），响应附加 ``degraded: true`` + ``degraded_reason``。
+``degraded_reason`` 为固定对外文案（``VECTOR_DEGRADED_REASON``），异常类型/消息/
+主机等内部细节一律只进 ``logger.warning``（S-6：不随响应出网）。LIKE 与
+列表 keyword 同口径：``%``/``_`` 不转义直配（参数化无注入面，既有备案
+口径，b2be 评审记录）。
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from src.common import chroma_client, embedding_client
 from src.common.errors import ApiError, ErrorCode
 from src.model import Product
 from src.services import product_service
+from src.services.degradation import VECTOR_DEGRADED_REASON
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +121,7 @@ def _like_fallback(
 
     复用公开的 ``product_service.list_on_sale``（scoped_query + on_sale +
     keyword LIKE 同口径 + newest 序 + 同分页与概要预载），不依赖其私有
-    ``_paginate``/``_SUMMARY_LOADS``（跨 service 只用公开名）；``raw_filters``
+    分页/预载实现（跨 service 只用公开名）；``raw_filters``
     为路由层原始（未归一化）字典，值均为 str，由 list_on_sale 内的首次
     （唯一一次）校验完成归一化——不得透传已归一化值，否则 Decimal 过
     不 ``_parse_filter_decimal`` 的类型门 → 误 9001（N-1）。``sort`` 钉死
@@ -137,20 +140,36 @@ def search(user, q: str, filters: dict, page: int, page_size: int) -> dict:
 
     降级判定为 ``is_available`` + 异常双判定：探测不可用直接降级；探测
     可用但真实调用（embed/chroma query）失败同样降级，绝不 5xx。
-    归一化校验仅向量路径需要（``_apply_business_filters`` 消费 Decimal 等
-    强类型值）；降级路径传原始 filters，归一化由 ``list_on_sale`` 内的
+
+    顺序（W-2）：``q`` 与筛选校验**先于** embedding 探活——非法筛选直接
+    9001，不做无谓探测，也不会出现"先打降级日志再抛 9001"的误导噪音。
+    归一化结果只供向量路径（``_apply_business_filters`` 消费 Decimal 等
+    强类型值）；降级路径仍传原始 filters，归一化由 ``list_on_sale`` 内的
     校验完成（N-1：避免归一化后二次校验类型门拒收 Decimal）。
+
+    对外 ``degraded_reason`` 恒为固定文案（``VECTOR_DEGRADED_REASON``）：原始异常
+    与探测原因只进日志，不随响应出网（S-6）。``degraded: true`` 语义不变。
     """
     normalized_q = _validate_q(q)
+    normalized_filters = product_service.validate_list_filters(filters)
 
     available, probe_reason = embedding_client.is_available()
     if available:
-        normalized_filters = product_service._validate_list_filters(filters)
         try:
             return _vector_search(normalized_q, normalized_filters, page, page_size)
         except Exception as exc:  # noqa: BLE001 - 向量链路异常 → LIKE 降级
-            reason = f"向量检索异常，已降级为 MySQL LIKE 检索: {type(exc).__name__}: {exc}"
+            logger.warning(
+                "搜索降级 q=%r user_id=%s：向量链路异常 %s: %s",
+                normalized_q,
+                user.id,
+                type(exc).__name__,
+                exc,
+            )
     else:
-        reason = f"embedding 不可用（{probe_reason}），已降级为 MySQL LIKE 检索"
-    logger.info("搜索降级 q=%r user_id=%s: %s", normalized_q, user.id, reason)
-    return _like_fallback(normalized_q, filters, reason, page, page_size)
+        logger.warning(
+            "搜索降级 q=%r user_id=%s：embedding 探测不可用（%s）",
+            normalized_q,
+            user.id,
+            probe_reason,
+        )
+    return _like_fallback(normalized_q, filters, VECTOR_DEGRADED_REASON, page, page_size)
