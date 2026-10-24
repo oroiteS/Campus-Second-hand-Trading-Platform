@@ -1,5 +1,7 @@
 """events_subscribers 测试：6 事件 → 服务函数路由正确；register_all 幂等。"""
 
+import time
+
 import pytest
 
 from src.services import events, events_subscribers, vector_service
@@ -111,8 +113,92 @@ class TestIdempotent:
 
     def test_ensure_indexes_failure_does_not_raise(self, app, fake_mongo):
         fake_mongo.fail = True
+        try:
+            with app.app_context():
+                events_subscribers.ensure_indexes()  # 不上抛（启动容错）
+            # 契约是「失败 → 置待补建标记」，不抛异常只是其中一半
+            assert events_subscribers.indexes_pending() is True
+        finally:
+            events_subscribers._reset_for_tests()
+
+
+class TestRequestPathBackfill:
+    """S-3：索引补建不依赖补偿线程（``VECTOR_RETRY_WORKER=0`` 也能补）。"""
+
+    # 任意路径即可：before_request 先于路由匹配执行，404 同样触发兜底
+    PROBE_PATH = "/api/__index_probe__"
+
+    @staticmethod
+    def _start_pending(app, fake_mongo) -> None:
+        # 清掉 app 创建期已建的索引记录，只观察补建行为
+        for name in ("user_profiles", "product_vectors", "user_behaviors"):
+            fake_mongo[name].indexes.clear()
+        fake_mongo.fail = True
         with app.app_context():
-            events_subscribers.ensure_indexes()  # 不上抛（启动容错）
+            events_subscribers.register_all()  # 索引失败 → 置待补建
+        assert events_subscribers.indexes_pending() is True
+        fake_mongo.fail = False
+
+    def test_first_request_backfills_pending_indexes(self, app, client, fake_mongo):
+        events_subscribers._reset_for_tests()
+        try:
+            self._start_pending(app, fake_mongo)
+            assert fake_mongo["user_profiles"].indexes == []
+
+            client.get(self.PROBE_PATH)
+
+            assert events_subscribers.indexes_pending() is False
+            assert fake_mongo["user_profiles"].indexes
+            assert fake_mongo["product_vectors"].indexes
+            assert fake_mongo["user_behaviors"].indexes
+        finally:
+            events_subscribers._reset_for_tests()
+
+    def test_no_pending_request_makes_no_index_calls(
+        self, app, client, fake_mongo, monkeypatch
+    ):
+        events_subscribers._reset_for_tests()
+        try:
+            with app.app_context():
+                events_subscribers.register_all()
+            profiles = fake_mongo["user_profiles"]
+            before = len(profiles.indexes)
+            # 计数取库：只断言 indexes 不变会漏掉「取了库但跳过 create_index」
+            from src.common import mongo_client
+
+            real_get_db = mongo_client.get_db
+            get_db_calls: list[int] = []
+            monkeypatch.setattr(
+                mongo_client,
+                "get_db",
+                lambda: get_db_calls.append(1) or real_get_db(),
+            )
+
+            client.get(self.PROBE_PATH)
+
+            assert len(profiles.indexes) == before  # 非 pending：零补建调用
+            assert get_db_calls == []  # 且连取库都不发生
+        finally:
+            events_subscribers._reset_for_tests()
+
+    def test_retry_interval_guard_skips_within_60s(self, app, client, fake_mongo):
+        events_subscribers._reset_for_tests()
+        try:
+            self._start_pending(app, fake_mongo)
+
+            # 模拟「刚尝试过」：60s 内即使 pending 也不再打 Mongo
+            events_subscribers._last_index_attempt = time.monotonic()
+            client.get(self.PROBE_PATH)
+            assert fake_mongo["user_profiles"].indexes == []
+            assert events_subscribers.indexes_pending() is True
+
+            # 超过重试间隔：放行一次
+            events_subscribers._last_index_attempt = time.monotonic() - 61
+            client.get(self.PROBE_PATH)
+            assert fake_mongo["user_profiles"].indexes
+            assert events_subscribers.indexes_pending() is False
+        finally:
+            events_subscribers._reset_for_tests()
 
 
 class TestCreateAppWiring:

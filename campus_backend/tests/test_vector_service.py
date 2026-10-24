@@ -9,6 +9,8 @@ import time
 
 import pytest
 
+from src.common.chroma_client import delete_collection as real_delete_collection
+from src.model import Product
 from src.services import vector_service
 
 
@@ -131,6 +133,22 @@ class TestSyncProduct:
         assert fake_chroma.vectors == {}
         assert fake_redis.llen(vector_service.VECTOR_RETRY_QUEUE_KEY) == 0  # 不进重试
 
+    def test_model_change_forces_recompute(
+        self, app, product, fake_mongo, fake_chroma, fake_embedding
+    ):
+        """S-3：同维换模型——文本未变也必须重建（不得当作「未变」跳过）。"""
+        vector_service.sync_product(product)
+        assert len(fake_embedding.calls) == 1
+        # 模拟存量由旧模型生成（文本 hash 与 metadata 均未变）
+        _mongo(fake_mongo).docs[0]["model"] = "old-model"
+
+        vector_service.sync_product(product)
+
+        assert len(fake_embedding.calls) == 2  # 强制重算
+        assert _mongo(fake_mongo).find_one({"product_id": product.id})["model"] == (
+            "fake-embedding-model"
+        )
+
 
 class TestUpdateStatusMetadata:
     def test_updates_metadata_without_recompute(
@@ -205,3 +223,103 @@ class TestRebuildAll:
         assert result["failed"] == 0
         assert len(fake_chroma.vectors) == 1
         assert _mongo(fake_mongo).find_one({"product_id": deleted.id}) is None
+
+    def test_rebuild_purges_orphan_ids(
+        self, app, db_create_all, fake_mongo, fake_chroma, fake_embedding,
+        school_fixtures, user_factory, category_fixtures, product_factory,
+    ):
+        """S-2：集合里残留的（MySQL 已消失的）id 必须被清掉，不得占召回位。"""
+        other_seller = user_factory(
+            username="seller03",
+            school_id=school_fixtures.multi.id,
+            auth_status="approved",
+        )
+        kept = [
+            product_factory(other_seller, category_fixtures.items[1].id, title="留存一"),
+            product_factory(other_seller, category_fixtures.items[1].id, title="留存二"),
+        ]
+        gone = product_factory(other_seller, category_fixtures.items[1].id, title="将消失")
+        for item in [*kept, gone]:
+            vector_service.sync_product(item)
+        assert len(fake_chroma.vectors) == 3  # 预置 3 个 id
+
+        db_create_all.session.delete(gone)  # 商品从 MySQL 消失
+        db_create_all.session.commit()
+        assert db_create_all.session.get(Product, gone.id) is None
+
+        result = vector_service.rebuild_all()
+
+        assert result["total"] == 2
+        assert len(fake_chroma.vectors) == 2  # 集合仅剩 2 个 id
+        assert str(gone.id) not in fake_chroma.vectors
+        assert set(fake_chroma.vectors) == {str(item.id) for item in kept}
+
+
+class TestDeleteCollection:
+    """S-2：delete_collection 不得因「连接未初始化」而静默 no-op。"""
+
+    def test_initialises_client_when_uninitialised(self, app, monkeypatch):
+        import sys
+        from types import SimpleNamespace
+
+        from src.common import chroma_client
+
+        deleted: list[str] = []
+
+        class _Client:
+            def delete_collection(self, name: str) -> None:
+                deleted.append(name)
+
+            def get_or_create_collection(self, name: str, metadata=None):
+                raise AssertionError("删除路径不应重建集合")
+
+        monkeypatch.setitem(
+            sys.modules, "chromadb", SimpleNamespace(HttpClient=lambda host, port: _Client())
+        )
+        monkeypatch.setattr(chroma_client, "_client", None)
+        monkeypatch.setattr(chroma_client, "_signature", None)
+        monkeypatch.setattr(chroma_client, "_collection", object())
+
+        with app.app_context():
+            real_delete_collection()
+
+        assert deleted and deleted[0].startswith("product_vectors")
+        assert chroma_client._collection is None
+
+    def test_missing_collection_tolerated(self, app, monkeypatch, caplog):
+        import sys
+        from types import SimpleNamespace
+
+        from src.common import chroma_client
+
+        class _Client:
+            def delete_collection(self, name: str) -> None:
+                raise RuntimeError("Collection does not exist")
+
+        monkeypatch.setitem(
+            sys.modules, "chromadb", SimpleNamespace(HttpClient=lambda host, port: _Client())
+        )
+        monkeypatch.setattr(chroma_client, "_client", None)
+        monkeypatch.setattr(chroma_client, "_signature", None)
+
+        with caplog.at_level("WARNING"), app.app_context():
+            real_delete_collection()  # 不上抛
+
+        assert any("集合删除失败" in r.message for r in caplog.records)
+
+
+class TestFakeChromaStubSemantics:
+    """桩精化（#8）：metadata 的 None 值 = 删键（与真实 Chroma 一致）。"""
+
+    def test_upsert_none_removes_key(self, fake_chroma):
+        fake_chroma.upsert(ids=["1"], embeddings=[[1.0, 0.0]], metadatas=[{"a": 1, "b": 2}])
+        fake_chroma.upsert(
+            ids=["1"], embeddings=[[1.0, 0.0]], metadatas=[{"a": 1, "b": None}]
+        )
+        assert fake_chroma.metadatas["1"] == {"a": 1}
+
+    def test_update_none_removes_key(self, fake_chroma):
+        fake_chroma.upsert(ids=["1"], embeddings=[[1.0, 0.0]], metadatas=[{"a": 1, "b": 2}])
+        fake_chroma.update(ids=["1"], metadatas=[{"b": None, "c": 3}])
+        assert fake_chroma.metadatas["1"] == {"a": 1, "c": 3}
+

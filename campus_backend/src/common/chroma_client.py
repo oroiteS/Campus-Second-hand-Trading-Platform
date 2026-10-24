@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from flask import current_app
+
+logger = logging.getLogger(__name__)
 
 # 懒初始化单例：HttpClient、其建连签名与集合句柄（配置变化时重建）
 _client: Any = None
@@ -23,13 +26,8 @@ def _collection_name(suffix: str) -> str:
     return f"product_vectors{suffix}"
 
 
-def get_collection() -> Any:
-    """返回商品向量集合（``get_or_create``，需在应用上下文内调用）。
-
-    metadata 固定 ``{"hnsw:space": "cosine"}``——余弦距离是画像与搜索
-    的一致性口径（需求：画像 L2 归一化后与 Chroma 余弦距离同构）。
-    测试经 monkeypatch 本函数注入内存桩（见 tests/conftest.py）。
-    """
+def _ensure_client() -> tuple[Any, tuple[str, int, str]]:
+    """确保 HttpClient 就绪（按配置签名懒建/重建），返回客户端与签名。"""
     global _client, _signature, _collection
     config = current_app.config
     signature = (
@@ -43,8 +41,20 @@ def get_collection() -> Any:
         _client = chromadb.HttpClient(host=signature[0], port=signature[1])
         _signature = signature
         _collection = None
+    return _client, signature
+
+
+def get_collection() -> Any:
+    """返回商品向量集合（``get_or_create``，需在应用上下文内调用）。
+
+    metadata 固定 ``{"hnsw:space": "cosine"}``——余弦距离是画像与搜索
+    的一致性口径（需求：画像 L2 归一化后与 Chroma 余弦距离同构）。
+    测试经 monkeypatch 本函数注入内存桩（见 tests/conftest.py）。
+    """
+    global _collection
+    client, signature = _ensure_client()
     if _collection is None:
-        _collection = _client.get_or_create_collection(
+        _collection = client.get_or_create_collection(
             name=_collection_name(signature[2]),
             metadata={"hnsw:space": "cosine"},
         )
@@ -52,9 +62,17 @@ def get_collection() -> Any:
 
 
 def delete_collection() -> None:
-    """删除商品向量集合（rebuild_all 重建与收尾清理用；未初始化则静默）。"""
+    """删除商品向量集合（rebuild_all 重建与收尾清理用）。
+
+    不依赖「此前是否已建过连接」——先确保 client 就绪再删，避免全新进程
+    调 rebuild 时静默 no-op（集合没删 → 旧 id 残留占召回位）。集合不存在 /
+    删除失败一律收敛为 warning，不阻断重建。
+    """
     global _collection
-    if _client is None or _signature is None:
-        return
-    _client.delete_collection(name=_collection_name(_signature[2]))
-    _collection = None
+    try:
+        client, signature = _ensure_client()
+        client.delete_collection(name=_collection_name(signature[2]))
+    except Exception as exc:  # noqa: BLE001 - 删除失败不阻断重建
+        logger.warning("Chroma 集合删除失败（按不存在处理，继续重建）: %s", exc)
+    finally:
+        _collection = None

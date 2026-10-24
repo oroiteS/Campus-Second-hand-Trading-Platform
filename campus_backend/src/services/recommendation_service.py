@@ -9,9 +9,10 @@ Chroma ``query(user_vector, n_results=90, where 本校+on_sale)`` 召回 →
 补足 / 降级）均排除自家在售商品（需求「首页推荐排除自己发布」）。
 
 降级矩阵：embedding / chroma / mongo 任一不可用 → 全随机 + ``degraded:
-true`` + reason（**Redis 不可用 → 跳过缓存直算，不算 degraded**）；管理
-员 → ``{"items": []}``（无推荐语义）。「纯随机冒充推荐」反目标：有画像
-用户必经画像向量召回路径，全随机仅出现在冷启动与显式降级。
+true`` + reason（固定对外文案，异常/主机/端口只进 ``logger.warning``；
+**Redis 不可用 → 跳过缓存直算，不算 degraded**）；管理员 → ``{"items": []}``
+（无推荐语义）。「纯随机冒充推荐」反目标：有画像用户必经画像向量召回
+路径，全随机仅出现在冷启动与显式降级。
 """
 
 from __future__ import annotations
@@ -26,6 +27,11 @@ from src.common.auth import scoped_key
 from src.common.redis_client import PRODUCT_DB_OFFSET
 from src.model import Product, db
 from src.services import product_service
+from src.services.degradation import (
+    EMBEDDING_UNAVAILABLE_REASON,
+    PROFILE_STORE_UNAVAILABLE_REASON,
+    RECALL_DEGRADED_REASON,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,22 +131,30 @@ def _compute(user) -> dict:
     try:
         user_vector = _profile_vector(user.id)
     except Exception as exc:  # noqa: BLE001 - Mongo 不可用
-        return _degraded_random(user, f"画像存储不可用，已降级为随机推荐: {exc}", own_ids)
+        logger.warning(
+            "推荐降级 user_id=%s：画像存储异常 %s: %s", user.id, type(exc).__name__, exc
+        )
+        return _degraded_random(user, PROFILE_STORE_UNAVAILABLE_REASON, own_ids)
     if user_vector is None:
         # 冷启动：全随机 40（正常路径，无 degraded 标记）
         items = _serialize(_random_feed(user, own_ids))
     else:
         available, probe_reason = embedding_client.is_available()
         if not available:
-            return _degraded_random(
-                user, f"embedding 不可用（{probe_reason}），已降级为随机推荐", own_ids
+            logger.warning(
+                "推荐降级 user_id=%s：embedding 探测不可用（%s）", user.id, probe_reason
             )
+            return _degraded_random(user, EMBEDDING_UNAVAILABLE_REASON, own_ids)
         try:
             recalled = _recall_by_profile(user, user_vector)
         except Exception as exc:  # noqa: BLE001 - Chroma/embedding 真实调用异常
-            return _degraded_random(
-                user, f"画像召回异常，已降级为随机推荐: {type(exc).__name__}: {exc}", own_ids
+            logger.warning(
+                "推荐降级 user_id=%s：画像召回异常 %s: %s",
+                user.id,
+                type(exc).__name__,
+                exc,
             )
+            return _degraded_random(user, RECALL_DEGRADED_REASON, own_ids)
         exclude_ids = list({*own_ids, *(p.id for p in recalled)})
         random_fill = product_service.list_on_sale_random(
             g.school_id, exclude_ids, FEED_TOTAL - len(recalled), scope_all=False

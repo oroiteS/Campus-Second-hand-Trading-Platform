@@ -15,7 +15,9 @@ b2be2 追加三桩（全手写、不引新包；b3/b4 可复用，接口形态�
   ``{"k": v}`` 与 ``{"$and": [...]}``；距离 = 1 − 余弦相似度（与真实
   Chroma cosine 同构）；经 monkeypatch ``common.chroma_client.
   get_collection`` / ``delete_collection`` 注入。置 ``stub.fail = True``
-  后 get_collection 抛 ``ConnectionError``。
+  后 get_collection 抛 ``ConnectionError``。metadata 中的 ``None`` 值按
+  真实 Chroma 语义处理为**删键**（不是写 None），避免将来生产代码误用
+  None 时被桩掩盖。
 - ``fake_embedding``：确定性伪向量 ``fake_embedding(texts) ->
   list[list[float]]``——按文本全文 hash 生成 1024 维（EMBEDDING_DIM）
   单位向量，同文本恒同向量、异文本异向量；monkeypatch
@@ -56,11 +58,28 @@ class TestConfig(Config):
     TESTING = True
     DEBUG = False
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    # 固定测试密钥（≥32 字节，避开 pyjwt InsecureKeyLengthWarning）；不读真实 .env
+    SECRET_KEY = "test-secret-key-0123456789abcdef-0123456789abcdef"
+    JWT_SECRET_KEY = SECRET_KEY
 
 
 @pytest.fixture()
 def app():
     return create_app(TestConfig)
+
+
+@pytest.fixture(autouse=True)
+def _reset_behavior_breaker():
+    """隔离 ``behavior_service`` 的模块级熔断状态（S-4）。
+
+    熔断状态是进程级全局量：某个用例注入 Mongo 故障后若不复位，同一进程
+    内后续用例会被短路（画像静默不写）。这里统一前后各复位一次。
+    """
+    from src.services import behavior_service
+
+    behavior_service._reset_circuit_for_tests()
+    yield
+    behavior_service._reset_circuit_for_tests()
 
 
 @pytest.fixture()
@@ -377,12 +396,61 @@ def png_upload():
 # ============================================================
 
 
+class FakeCursor:
+    """``pymongo.Cursor`` 语义最小桩：只可迭代 + 链式 ``sort``/``limit``。
+
+    **刻意不实现** ``__bool__`` / ``__len__``：真实 ``pymongo.Cursor``
+    两者皆无，``if cursor:`` 恒为真。空结果集上误用真值判断会走到
+    ``max(<空游标>)`` 并抛 ``ValueError``——桩必须保留该语义，否则
+    测试抓不到这类回归（只返回 list 会让 ``if recent:`` 假阴性通过）。
+    """
+
+    def __init__(self, docs: list[dict], trace: dict) -> None:
+        self._docs = [dict(doc) for doc in docs]
+        self._trace = trace
+
+    @staticmethod
+    def _sort_key(doc: dict, name: str):
+        value = doc.get(name)
+        # None 排序位用同型哨兵，避免 tuple 比较落到 ``None < None``
+        return (value is None, 0 if value is None else value)
+
+    def sort(self, key_or_list, direction=None):
+        keys = (
+            [(key_or_list, 1 if direction is None else direction)]
+            if isinstance(key_or_list, str)
+            else list(key_or_list)
+        )
+        self._trace["sort"] = keys
+        for name, order in reversed(keys):
+            self._docs.sort(
+                key=lambda doc, key=name: self._sort_key(doc, key),
+                reverse=order < 0,
+            )
+        return self
+
+    def limit(self, count: int):
+        self._trace["limit"] = count
+        self._docs = self._docs[:count]
+        return self
+
+    def __iter__(self):
+        return iter(self._docs)
+
+
 class FakeMongoCollection:
-    """内存集合桩：等值过滤 + $set/$inc 更新 + upsert（覆盖 b2be2 所用子集）。"""
+    """内存集合桩：等值过滤 + $set/$inc 更新 + upsert（覆盖 b2be2 所用子集）。
+
+    ``find`` 返回 ``FakeCursor``（不可判真）；``find_one`` 支持 pymongo
+    关键字 ``sort=``。两者均记录调用参数（``find_calls`` /
+    ``find_one_calls``），供「有界查询」断言使用。
+    """
 
     def __init__(self) -> None:
         self.docs: list[dict] = []
         self.indexes: list[tuple] = []
+        self.find_calls: list[dict] = []
+        self.find_one_calls: list[dict] = []
 
     @staticmethod
     def _match(doc: dict, filter_: dict | None) -> bool:
@@ -418,14 +486,23 @@ class FakeMongoCollection:
         for key, value in (update.get("$inc") or {}).items():
             doc[key] = doc.get(key, 0) + value
 
-    def find_one(self, filter_: dict | None = None, *args, **kwargs) -> dict | None:
-        for doc in self.docs:
-            if self._match(doc, filter_):
-                return dict(doc)
-        return None
+    def _filtered(self, filter_: dict | None) -> list[dict]:
+        return [doc for doc in self.docs if self._match(doc, filter_)]
 
-    def find(self, filter_: dict | None = None) -> list[dict]:
-        return [dict(doc) for doc in self.docs if self._match(doc, filter_)]
+    def find_one(self, filter_: dict | None = None, *args, **kwargs) -> dict | None:
+        """``find_one(filter, sort=[("k", -1)])``：sort 为 pymongo 关键字参数。"""
+        trace: dict = {"filter": filter_, "sort": kwargs.get("sort"), "limit": None}
+        self.find_one_calls.append(trace)
+        cursor = FakeCursor(self._filtered(filter_), trace)
+        if kwargs.get("sort"):
+            cursor.sort(kwargs["sort"])
+        doc = next(iter(cursor), None)
+        return dict(doc) if doc is not None else None
+
+    def find(self, filter_: dict | None = None, *args, **kwargs) -> FakeCursor:
+        trace: dict = {"filter": filter_, "sort": None, "limit": None}
+        self.find_calls.append(trace)
+        return FakeCursor(self._filtered(filter_), trace)
 
     def insert_one(self, doc: dict):
         self.docs.append(dict(doc))
@@ -523,13 +600,24 @@ class FakeChromaCollection:
         self.documents: dict[str, str] = {}
         self.metadatas: dict[str, dict] = {}
 
+    @staticmethod
+    def _apply_metadata(target: dict, updates: dict) -> None:
+        """metadata 写值语义：``None`` 表示**删键**（与真实 Chroma 一致）。"""
+        for key, value in updates.items():
+            if value is None:
+                target.pop(key, None)
+            else:
+                target[key] = value
+
     def upsert(self, ids, embeddings, documents=None, metadatas=None):
         for i, item_id in enumerate(ids):
             self.vectors[str(item_id)] = list(embeddings[i])
             if documents is not None:
                 self.documents[str(item_id)] = documents[i]
             if metadatas is not None:
-                self.metadatas[str(item_id)] = dict(metadatas[i])
+                merged: dict = {}
+                self._apply_metadata(merged, dict(metadatas[i]))
+                self.metadatas[str(item_id)] = merged
 
     def query(self, query_embeddings, n_results: int = 10, where: dict | None = None):
         scored: list[tuple[str, float]] = []
@@ -569,7 +657,7 @@ class FakeChromaCollection:
             if documents is not None:
                 self.documents[item_id] = documents[i]
             if metadatas is not None:
-                self.metadatas[item_id].update(dict(metadatas[i]))
+                self._apply_metadata(self.metadatas[item_id], dict(metadatas[i]))
 
     def get(self, ids=None):
         wanted = [str(i) for i in ids] if ids else list(self.vectors)

@@ -307,6 +307,116 @@ class TestDegraded:
         assert "degraded" not in data  # Redis 不可用不算 degraded
 
 
+class TestDegradedReason:
+    """S-1：降级原因只回固定文案，异常/主机/端口只进日志。"""
+
+    LEAKS = ("Exception", "Error", "10.9.9.9", "8010", "127.0.0.1", "Chroma", "chroma")
+
+    @staticmethod
+    def _assert_clean(reason: str) -> None:
+        assert isinstance(reason, str) and reason
+        assert not any(leak in reason for leak in TestDegradedReason.LEAKS), reason
+
+    def test_embedding_probe_reason_not_leaked(
+        self, app, client, world, fake_mongo, fake_chroma, fake_embedding, monkeypatch,
+        make_auth_header,
+    ):
+        from src.common import embedding_client
+        from src.services.degradation import EMBEDDING_UNAVAILABLE_REASON
+
+        _seed_profile(fake_mongo, app, world.viewer["id"])
+        monkeypatch.setattr(
+            embedding_client,
+            "is_available",
+            lambda: (False, "ConnectionError: 10.9.9.9:8010 refused"),
+        )
+
+        res = client.get(HOME_URL, headers=make_auth_header(world.viewer["id"]))
+        data = res.get_json()["data"]
+
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == EMBEDDING_UNAVAILABLE_REASON
+        self._assert_clean(data["degraded_reason"])
+
+    def test_recall_exception_not_leaked(
+        self, app, client, world, fake_mongo, fake_chroma, fake_embedding, make_auth_header
+    ):
+        from src.services.degradation import RECALL_DEGRADED_REASON
+
+        _seed_profile(fake_mongo, app, world.viewer["id"])
+        fake_chroma.fail["fail"] = True
+
+        res = client.get(HOME_URL, headers=make_auth_header(world.viewer["id"]))
+        data = res.get_json()["data"]
+
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == RECALL_DEGRADED_REASON
+        self._assert_clean(data["degraded_reason"])
+
+    def test_mongo_failure_reason_not_leaked(
+        self, app, client, world, fake_mongo, fake_chroma, fake_embedding, make_auth_header
+    ):
+        from src.services.degradation import PROFILE_STORE_UNAVAILABLE_REASON
+
+        fake_mongo.fail = True
+
+        res = client.get(HOME_URL, headers=make_auth_header(world.viewer["id"]))
+        data = res.get_json()["data"]
+
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == PROFILE_STORE_UNAVAILABLE_REASON
+        self._assert_clean(data["degraded_reason"])
+
+
+class TestStaleProfileRecovery:
+    """B-2 端到端：768 维存量画像在一次点击后即被纠正，推荐不再永久降级。"""
+
+    def test_stale_dim_profile_overwritten_then_feed_not_degraded(
+        self, app, client, world, fake_mongo, fake_chroma, fake_embedding, fake_redis,
+        make_auth_header,
+    ):
+        from src.services import behavior_service, vector_service
+
+        dim = app.config["EMBEDDING_DIM"]
+        # 存量旧画像：768 维，dim 字段却谎报 1024
+        fake_mongo["user_profiles"].update_one(
+            {"user_id": world.viewer["id"]},
+            {
+                "$set": {
+                    "vector": [0.02] * (dim - 256),
+                    "dim": dim,
+                    "model": "fake-embedding-model",
+                    "behavior_count": 4,
+                }
+            },
+            upsert=True,
+        )
+        target = world.pool[0]
+        vector_service.sync_product(target)
+
+        behavior_service.record_view(world.viewer["id"], target)  # 一次详情点击
+
+        profile = fake_mongo["user_profiles"].find_one({"user_id": world.viewer["id"]})
+        assert len(profile["vector"]) == dim
+        assert profile["dim"] == dim
+
+        for product in world.pool[:5]:
+            _seed_chroma(
+                fake_chroma, product, profile["vector"], 0.9, school_id=world.school_id
+            )
+        res = client.get(
+            HOME_URL,
+            headers=make_auth_header(world.viewer["id"]),
+            query_string={"refresh": "true"},
+        )
+        data = res.get_json()["data"]
+        assert "degraded" not in data  # 不再触发 Chroma 维度错误降级
+        # 非空召回：推荐链路真的走通（静默返回空列表不能过关）
+        assert data["items"]
+        assert len(data["items"]) > 0
+        assert res.status_code == 200
+
+
 class TestAdmin:
     def test_admin_empty_list(
         self, app, client, world, fake_mongo, fake_chroma, fake_embedding, fake_redis,

@@ -33,6 +33,9 @@ def create_app(config_object: object = None) -> Flask:
     _configure_jwt(JWTManager(app))
     # 每请求进入即注入同校作用域上下文（g.school_id / g.scope_all）
     app.before_request(inject_scope)
+    # S-3：Mongo 索引补建兜底——启动失败（或补偿线程关闭）后由首个请求补建；
+    # 函数内部双闸（未 pending 立即返回 / 60s 内不重试），不逐请求打 Mongo。
+    app.before_request(_backfill_indexes_if_pending)
 
     register_routes(app)
     _register_error_handlers(app)
@@ -48,6 +51,13 @@ def create_app(config_object: object = None) -> Flask:
         with app.app_context():
             run_startup_tasks()
     return app
+
+
+def _backfill_indexes_if_pending() -> None:
+    """S-3 请求路径兜底：索引待补建时按闸门重试（失败不上抛）。"""
+    from src.services.events_subscribers import ensure_indexes_if_pending
+
+    ensure_indexes_if_pending()
 
 
 def _configure_jwt(jwt: JWTManager) -> None:

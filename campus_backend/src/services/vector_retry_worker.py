@@ -5,7 +5,14 @@
 - 商品仍存在（非 deleted）→ ``vector_service.attempt_sync`` 严格重放；
   失败且消息龄 > 24h → 丢弃 + error 日志（防死信堆积），否则原样回队
   （**保留原 ts**——龄期不因重放重置，保证超龄消息终被丢弃）；
-- 商品已删除/不存在 → ``remove_product`` 补删（双删幂等）。
+- 商品已删除/不存在 → ``vector_service.attempt_remove`` 严格双删；
+  失败同样按原 ts 判龄期（超龄丢弃 / 否则原样回队），**不得**走事件入口
+  ``remove_product``（其自有入队会重置 ts，B-3）。
+
+``replayed`` 只在真正成功时 +1；失败按龄期二选一计数——超龄丢弃只计
+``dropped``，未超龄回队只计 ``failed``（同一条消息绝不双计，告警可用
+``failed > 0`` 判异常而不被超龄丢弃误报）。每轮开头顺带补建「待补建」的
+Mongo 索引（S-5）。
 
 启动：``create_app()`` 内按 ``VECTOR_RETRY_WORKER``（默认开）条件启动；
 TESTING 跳过（app.py 仅 3 行，循环逻辑全部在本模块）。线程自带应用
@@ -23,7 +30,7 @@ from flask import Flask
 
 from src.common import redis_client
 from src.common.redis_client import SYSTEM_DB_OFFSET
-from src.services import vector_service
+from src.services import events_subscribers, vector_service
 from src.services.product_service import get_active_by_id
 
 logger = logging.getLogger(__name__)
@@ -33,10 +40,30 @@ INTERVAL_S = 60
 BATCH_LIMIT = 100
 
 
+def _requeue_or_drop(product_id: int, ts: int, rpush, *, label: str) -> bool:
+    """失败处理：超龄丢弃返回 True，否则按**原 ts** 回队返回 False。"""
+    age = time.time() - ts
+    if age > vector_service.RETRY_MAX_AGE_S:
+        logger.error("%s超 24h 仍失败，丢弃 product_id=%s（龄 %.0fs）", label, product_id, age)
+        return True
+    rpush(
+        vector_service.VECTOR_RETRY_QUEUE_KEY,
+        json.dumps({"product_id": product_id, "ts": ts}),
+    )
+    return False
+
+
 def process_once(app: Flask, *, limit: int = BATCH_LIMIT) -> dict:
     """单轮重放：返回 ``{"replayed", "dropped", "failed"}``（需应用上下文内
-    的 app 引用即可，本函数自建上下文）。"""
+    的 app 引用即可，本函数自建上下文）。
+
+    计数口径（三者互斥，同一条消息只落一个计数器）：``replayed`` 仅成功
+    重放；``dropped`` 为超龄丢弃与不可解析/维度不符丢弃；``failed`` 仅
+    「失败但未超龄、按原 ts 回队」——超龄丢弃**不**再计 ``failed``，故
+    ``failed > 0`` 可直接作为异常告警判据。
+    """
     with app.app_context():
+        events_subscribers.ensure_indexes_if_pending()  # S-5：索引待补建时重试
         queue = redis_client.get_redis(SYSTEM_DB_OFFSET).lpop
         rpush = redis_client.get_redis(SYSTEM_DB_OFFSET).rpush
         replayed = dropped = failed = 0
@@ -60,9 +87,15 @@ def process_once(app: Flask, *, limit: int = BATCH_LIMIT) -> dict:
             product = get_active_by_id(product_id)
             attempted.add(product_id)
             if product is None:
-                # 商品已删除/不存在：补偿删除（幂等）
-                vector_service.remove_product(product_id)
-                replayed += 1
+                # 商品已删除/不存在：严格补偿删除（失败按原 ts 判龄期）
+                try:
+                    vector_service.attempt_remove(product_id)
+                    replayed += 1
+                except Exception:  # noqa: BLE001 - 失败按龄期回队或丢弃（互斥计数）
+                    if _requeue_or_drop(product_id, ts, rpush, label="向量删除补偿"):
+                        dropped += 1
+                    else:
+                        failed += 1
                 continue
             try:
                 vector_service.attempt_sync(product)
@@ -71,21 +104,11 @@ def process_once(app: Flask, *, limit: int = BATCH_LIMIT) -> dict:
                 # 维度错误重试无法修复：丢弃 + error 日志
                 dropped += 1
                 logger.error("%s", exc)
-            except Exception:  # noqa: BLE001 - 重放失败按龄期回队或丢弃
-                failed += 1
-                age = time.time() - ts
-                if age > vector_service.RETRY_MAX_AGE_S:
+            except Exception:  # noqa: BLE001 - 重放失败按龄期回队或丢弃（互斥计数）
+                if _requeue_or_drop(product_id, ts, rpush, label="向量重试"):
                     dropped += 1
-                    logger.error(
-                        "向量重试超 24h 仍失败，丢弃 product_id=%s（龄 %.0fs）",
-                        product_id,
-                        age,
-                    )
                 else:
-                    rpush(
-                        vector_service.VECTOR_RETRY_QUEUE_KEY,
-                        json.dumps({"product_id": product_id, "ts": ts}),
-                    )
+                    failed += 1
         if replayed or dropped or failed:
             logger.info(
                 "向量重试轮完成 replayed=%s dropped=%s failed=%s",

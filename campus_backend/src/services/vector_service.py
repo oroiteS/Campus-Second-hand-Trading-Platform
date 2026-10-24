@@ -94,13 +94,15 @@ def _enqueue_retry(product_id: int) -> None:
 def attempt_sync(product: Product) -> None:
     """严格同步：失败上抛（worker 重放与 rebuild_all 用，便于计数/保龄）。
 
-    流程：模板文本 → text_hash 与 Mongo 存量比对（未变且 metadata 未变
-    跳过，不调 embedding）→ embed_texts → Mongo upsert → Chroma upsert。
+    流程：模板文本 → text_hash / metadata / model 与 Mongo 存量比对（三者
+    均未变才跳过，不调 embedding）→ embed_texts → Mongo upsert → Chroma
+    upsert。``model`` 纳入判定：同维换模型时旧向量不可复用（S-3）。
     """
     text = build_text(product, _category_name(product))
     digest = text_hash(text)
     metadata = _product_metadata(product)
     product_id = int(product.id)
+    model = embedding_client.active_model()
 
     collection = mongo_client.get_db()["product_vectors"]
     existing = collection.find_one({"product_id": product_id})
@@ -108,8 +110,9 @@ def attempt_sync(product: Product) -> None:
         existing is not None
         and existing.get("text_hash") == digest
         and existing.get("metadata") == metadata
+        and existing.get("model") == model
     ):
-        return  # 文本与 metadata 均未变化：跳过（不调 embedding）
+        return  # 文本、metadata 与模型均未变化：跳过（不调 embedding）
 
     vector = embedding_client.embed_texts([text])[0]
     dim = current_app.config["EMBEDDING_DIM"]
@@ -118,7 +121,6 @@ def attempt_sync(product: Product) -> None:
         raise VectorDimMismatch(
             f"向量维度不符（got {len(vector)}, expect {dim}），拒写 product_id={product_id}"
         )
-    model = embedding_client.active_model()
 
     # 先 Mongo（权威副本）后 Chroma（派生索引）
     collection.update_one(
@@ -182,12 +184,23 @@ def update_status_metadata(product: Product) -> None:
         _enqueue_retry(product_id)
 
 
+def attempt_remove(product_id: int) -> None:
+    """严格删除补偿：失败上抛（worker 判龄期用；不入队、不重置消息 ts）。"""
+    product_id = int(product_id)
+    mongo_client.get_db()["product_vectors"].delete_one({"product_id": product_id})
+    chroma_client.get_collection().delete(ids=[str(product_id)])
+
+
 def remove_product(product_id: int) -> None:
-    """Mongo delete + Chroma delete（删除事件的补偿；双删幂等）。"""
+    """Mongo delete + Chroma delete（删除事件的补偿；双删幂等）。
+
+    事件入口语义：失败仅入重试队列 + error 日志，绝不上抛（不影响删除
+    200）。worker 走 ``attempt_remove`` 严格路径，避免队列消息龄期被这里
+    的重新入队重置（B-3）。
+    """
     product_id = int(product_id)
     try:
-        mongo_client.get_db()["product_vectors"].delete_one({"product_id": product_id})
-        chroma_client.get_collection().delete(ids=[str(product_id)])
+        attempt_remove(product_id)
     except Exception as exc:  # noqa: BLE001 - 失败转重试队列（worker 补删）
         logger.error("向量删除失败，进重试队列 product_id=%s: %s", product_id, exc)
         _enqueue_retry(product_id)

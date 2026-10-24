@@ -15,6 +15,7 @@ from src.common import redis_client, security
 from src.common.auth import scoped_key
 from src.common.errors import ApiError, ErrorCode
 from src.model import User, db
+from src.services.degradation import LOGOUT_DEGRADED_REASON
 
 if TYPE_CHECKING:
     from redis import Redis
@@ -203,7 +204,7 @@ def logout(jti: str, remaining_seconds: int) -> dict:
         return {}
     except Exception as exc:  # noqa: BLE001 - 降级显式可见（契约 logout 200 语义）
         current_app.logger.warning("Redis 不可用，logout 黑名单未落: %s", exc)
-        return {"degraded": True, "degraded_reason": f"Redis 不可用: {type(exc).__name__}"}
+        return {"degraded": True, "degraded_reason": LOGOUT_DEGRADED_REASON}
 
 
 # ---- 密码重置 ----
