@@ -56,3 +56,17 @@
 .filter-bar__price-inputs .ant-input {
   min-width: 0;
 }
+
+/* 分类加载失败：错误文案 + 重试（可达触控目标） */
+.filter-bar__load-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.filter-bar__retry {
+  min-height: var(--touch-target);
+  padding-inline: var(--space-2);
+}

@@ -15,6 +15,7 @@ import {
   validateUsername,
 } from '../../utils/validators'
 import { ApiError } from '../http'
+import { svgDataUrl } from './imageData'
 import {
   MOCK_ACCOUNTS,
   cloneProfile,
@@ -23,6 +24,19 @@ import {
   nowIso,
   type MockAccount,
 } from './users'
+
+/**
+ * student02 头像（mock 图源与商品图同口径：inline SVG data URI，零外网依赖、无裂图）。
+ * 复用 `imageData.svgDataUrl`（`shape: 'circle'`）——图源拼接只有一处定义。
+ */
+const MOCK_AVATAR_URL = svgDataUrl({
+  width: 120,
+  height: 120,
+  fill: '#4c6ef5',
+  lines: ['明'],
+  fontSize: 52,
+  shape: 'circle',
+})
 
 /**
  * mock 账号仓库：覆盖任务卡要求的登录三态 + 驳回演示态——
@@ -63,7 +77,7 @@ const INITIAL_ACCOUNTS: MockAccount[] = [
       nickname: '小明',
       display_name: '小明-示例大学(东校区)',
       phone: '13812345678',
-      avatar: { id: 42, url: '/api/images/42' },
+      avatar: { id: 42, url: MOCK_AVATAR_URL },
       school: { id: 1, name: '示例大学', multi_campus: true },
       campus: { id: 1, school_id: 1, name: '东校区' },
       role: 'student',

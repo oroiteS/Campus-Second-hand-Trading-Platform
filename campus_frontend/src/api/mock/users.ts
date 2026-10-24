@@ -10,6 +10,7 @@ import {
   validateUploadFile,
 } from '../../utils/validators'
 import { ApiError, handleCertificationRequired, handleTokenInvalid } from '../http'
+import { readFileAsDataUrl, svgDataUrl } from './imageData'
 
 /**
  * mock 会话：内存态的「当前登录用户」。
@@ -170,22 +171,47 @@ export function mockChangePassword(oldPassword: string, newPassword: string): Pr
 
 let nextImageIdSeed = 43
 
-/** 生成 mock 图片 id，url 一律为契约 ImageRef 形态（同源相对路径） */
+/** 生成 mock 图片 id */
 export function nextImageId(): number {
   nextImageIdSeed += 1
   return nextImageIdSeed
 }
 
-/** POST /api/users/me/avatar：文件预检（类型/大小）→ 更新 avatar 字段 */
+/** 头像占位图配色（mock 图片内容色，非 UI 设计令牌） */
+const AVATAR_COLORS = ['#4c6ef5', '#2f9e44', '#e8590c', '#1098ad', '#ae3ec9']
+
+/** 按 id 生成的头像占位图：读取失败/体积过大时兜底，`<img>` 不裂图 */
+function avatarPlaceholder(id: number): string {
+  return svgDataUrl({
+    width: 120,
+    height: 120,
+    fill: AVATAR_COLORS[id % AVATAR_COLORS.length] ?? '#4c6ef5',
+    lines: ['头'],
+    fontSize: 48,
+  })
+}
+
+/**
+ * 本地 avatar 持久化上限（字符数）：头像随 authStore 落 localStorage（约 5MB 配额），
+ * 超大图转 data URI 会超限并连带整个登录态写失败，故超限改走 id 占位图。
+ */
+const AVATAR_INLINE_MAX_CHARS = 600_000
+
+/**
+ * POST /api/users/me/avatar：文件预检（类型/大小）→ 转 data URI → 更新 avatar 字段。
+ * mock 无服务端图床，url 一律为本地 data URI（同 mock 上传/商品图口径，零外网、不裂图）。
+ */
 export function mockUploadAvatar(file: File): Promise<UserProfile> {
-  return delay(500).then(() => {
+  return delay(500).then(async () => {
     const user = requireSession()
     const fileError = validateUploadFile(file, '头像')
     if (fileError) {
       throw new ApiError(9001, '参数校验失败', { fields: { file: fileError } })
     }
     const id = nextImageId()
-    user.avatar = { id, url: `/api/images/${id}` }
+    const fallback = (): string => avatarPlaceholder(id)
+    const dataUrl = await readFileAsDataUrl(file, fallback)
+    user.avatar = { id, url: dataUrl.length > AVATAR_INLINE_MAX_CHARS ? fallback() : dataUrl }
     return cloneProfile(user)
   })
 }

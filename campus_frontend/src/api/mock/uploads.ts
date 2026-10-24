@@ -2,6 +2,7 @@ import type { ImageRef } from '../../types'
 import { delay } from '../../utils/delay'
 import { validateUploadFile } from '../../utils/validators'
 import { ApiError } from '../http'
+import { readFileAsDataUrl, svgDataUrl } from './imageData'
 import { requireVerifiedSession } from './users'
 
 /**
@@ -27,30 +28,18 @@ let nextUploadIdSeed = 90_001
 
 /** 读文件内容为 data URI（mock 图源）；读取失败回退占位 SVG */
 function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      resolve(typeof reader.result === 'string' ? reader.result : fallbackPlaceholder())
-    }
-    reader.onerror = () => {
-      resolve(fallbackPlaceholder())
-    }
-    reader.readAsDataURL(file)
-  })
+  return readFileAsDataUrl(file, fallbackPlaceholder)
 }
 
 /** 兜底占位图（中性灰 SVG data URI，与商品池占位策略一致） */
 function fallbackPlaceholder(): string {
-  // SVG 命名空间分段拼接：保持本目录源码零 http 字面（任务卡图源铁律）。
-  // xmlns 为 data URI SVG 的必需命名空间（W3C 规范要求），非外网图源；
-  // 经第 1 轮审查豁免 grep 门槛（豁免由主 agent 登记看板）。
-  const ns = 'http' + '://' + 'www.w3.org/2000/svg'
-  const svg =
-    `<svg xmlns='${ns}' width='600' height='450'>` +
-    `<rect width='600' height='450' fill='#495057'/>` +
-    `<text x='300' y='230' font-size='28' text-anchor='middle' font-family='sans-serif' fill='#ffffff'>mock 上传占位图</text>` +
-    `</svg>`
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`
+  return svgDataUrl({
+    width: 600,
+    height: 450,
+    fill: '#495057',
+    lines: ['mock 上传占位图'],
+    fontSize: 28,
+  })
 }
 
 export function mockUploadImage(file: File, purpose: 'product'): Promise<ImageRef> {

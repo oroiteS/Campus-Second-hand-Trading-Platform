@@ -1,4 +1,4 @@
-import { Input, Segmented, Select } from 'antd'
+import { Button, Input, Segmented, Select } from 'antd'
 import { listCategories } from '../api/categories'
 import { useAsyncData } from '../hooks/useAsyncData'
 import type { ProductCondition, ProductListQuery } from '../types'
@@ -44,6 +44,8 @@ interface FilterBarProps {
   priceErrors?: FilterPriceErrors
   /** 关键词预检错误（页面侧 validators 产出，内联展示；随 showKeyword 出现） */
   keywordError?: string
+  /** 文本输入「立即提交」回调（失焦 / 回车）；页面侧据此取消防抖、马上写 URL 取数 */
+  onCommitText?: () => void
   /** 是否渲染关键词输入（列表页专用：搜索页有自己的 q 输入框，契约无 keyword 参数） */
   showKeyword?: boolean
   /** id 前缀：列表/搜索两页共用组件时保证表单控件 id 唯一 */
@@ -63,6 +65,7 @@ export function FilterBar({
   onSortChange,
   priceErrors = {},
   keywordError,
+  onCommitText,
   showKeyword = false,
   idPrefix,
 }: FilterBarProps) {
@@ -85,6 +88,8 @@ export function FilterBar({
             placeholder="标题关键词，如：键盘"
             value={values.keyword ?? ''}
             onChange={(e) => onChange({ keyword: e.target.value })}
+            onBlur={onCommitText}
+            onPressEnter={onCommitText}
             aria-invalid={keywordError ? true : undefined}
             aria-describedby={keywordError ? `${idPrefix}-keyword-error` : undefined}
             status={keywordError ? 'error' : undefined}
@@ -112,8 +117,16 @@ export function FilterBar({
           status={categories.error ? 'error' : undefined}
         />
         {categories.error && (
-          <p className="form-field__error" role="alert">
+          <p className="form-field__error filter-bar__load-error" role="alert">
             {categories.error}
+            <Button
+              type="link"
+              size="small"
+              className="filter-bar__retry"
+              onClick={categories.reload}
+            >
+              重试
+            </Button>
           </p>
         )}
       </div>
@@ -136,14 +149,22 @@ export function FilterBar({
         <span className="filter-bar__label" id={`${idPrefix}-price-label`}>
           价格区间（元）
         </span>
-        <div className="filter-bar__price-inputs">
+        {/* 可见分组名由 role="group" 引用；两个输入各自保留独立可访问名（价格下界/上界），
+            不出现「两个输入共用一个名称」 */}
+        <div
+          className="filter-bar__price-inputs"
+          role="group"
+          aria-labelledby={`${idPrefix}-price-label`}
+        >
           <Input
             id={`${idPrefix}-price-min`}
             inputMode="decimal"
             placeholder="最低"
             value={values.priceMin}
             onChange={(e) => onChange({ priceMin: e.target.value })}
-            aria-labelledby={`${idPrefix}-price-label`}
+            onBlur={onCommitText}
+            onPressEnter={onCommitText}
+            aria-label="价格下界"
             aria-invalid={priceErrors.min || priceErrors.range ? true : undefined}
             aria-describedby={
               priceErrors.min || priceErrors.range ? `${idPrefix}-price-error` : undefined
@@ -157,7 +178,9 @@ export function FilterBar({
             placeholder="最高"
             value={values.priceMax}
             onChange={(e) => onChange({ priceMax: e.target.value })}
-            aria-labelledby={`${idPrefix}-price-label`}
+            onBlur={onCommitText}
+            onPressEnter={onCommitText}
+            aria-label="价格上界"
             aria-invalid={priceErrors.max || priceErrors.range ? true : undefined}
             aria-describedby={
               priceErrors.max || priceErrors.range ? `${idPrefix}-price-error` : undefined

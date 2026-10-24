@@ -12,6 +12,7 @@ import type { AuthApplication, SchoolWithCampuses } from '../../types'
 import { useAsyncData } from '../../hooks/useAsyncData'
 import { errorMessage, extractFieldErrors, isTokenInvalidError } from '../../utils/apiError'
 import { formatDateTime } from '../../utils/format'
+import { isInternalPath } from '../../utils/routeState'
 import { AUTH_STATUS_TEXT } from '../../utils/statusText'
 import {
   validateRealName,
@@ -55,8 +56,7 @@ export function CertificationPage() {
   // 引导走 window.location.assign 整页跳转、无法携带 location.state，故此处按 query
   // 口径消费（改动最小）；仅接受站内路径防外链，且认证页自身不触发 1004 引导，无循环跳转。
   const rawFrom = searchParams.get('from')
-  const fromPath =
-    rawFrom != null && rawFrom.startsWith('/') && !rawFrom.startsWith('//') ? rawFrom : null
+  const fromPath = isInternalPath(rawFrom) ? rawFrom : null
 
   // 页面入口守卫（与路由层 RequireAuth 双层拦截）
   if (!user) {
@@ -326,13 +326,19 @@ function CertificationForm({
     } catch (err) {
       const fields = extractFieldErrors(err)
       if (fields) {
-        setErrors({
+        const mapped: CertErrors = {
           school_id: fields.school_id,
           campus_id: fields.campus_id,
           real_name: fields.real_name,
           student_no: fields.student_no,
           file: fields.file,
-        })
+        }
+        if (Object.values(mapped).some((message) => message != null && message !== '')) {
+          setErrors(mapped)
+        } else {
+          // 后端返回未知字段（如 purpose / student_no.0）：无字段可落位时回落表单级提示
+          onError(errorMessage(err, '提交失败，请稍后重试'))
+        }
       } else if (!isTokenInvalidError(err)) {
         // 9003 状态冲突等表单级反馈
         onError(errorMessage(err, '提交失败，请稍后重试'))

@@ -26,7 +26,7 @@ const STATUS_TABS: Array<{ key: 'all' | ProductStatus; label: string }> = [
  * 我的商品：状态 tab + 卡片网格 + 行内操作。
  * - 状态机：编辑 / 上下架 / 删除 仅 on_sale / off_sale 提供（sold/trading 无入口）；
  * - 上下架 3002（强制下架）等错误文案经 Alert 可见；操作成功后列表就地刷新；
- * - 删除二次确认 Modal（焦点管理交由 antd Modal：打开聚焦确认键、关闭还原触发元素）。
+ * - 删除二次确认 Modal（危险操作不自动聚焦确认键：焦点落在取消键，关闭还原触发元素）。
  */
 export function MyProductsPage() {
   const phase = useAuthPhase()
@@ -63,7 +63,7 @@ function MyProducts() {
     })
   }, [statusFilter, page])
 
-  const { data, loading, error, retry } = useQueryList(fetchPage)
+  const { data, loading, fetching, error, retry } = useQueryList(fetchPage)
 
   function handleTabChange(key: string): void {
     setStatusFilter(key as 'all' | ProductStatus)
@@ -143,28 +143,33 @@ function MyProducts() {
         loading={loading}
         error={error}
         onRetry={retry}
-        empty={(data?.items.length ?? 0) === 0}
+        empty={(data?.items.length ?? 0) === 0 && !fetching}
         emptyDescription={
           statusFilter === 'all' ? '还没有发布过商品，去发布第一件吧' : '该状态下暂无商品'
         }
       >
         {data && (
           <>
-            {statusFilter === 'all' && (
-              <p className="product-list__meta">
-                共 {data.total} 件商品
+            <p className="product-list__meta" aria-live="polite">
+              共 {data.total} 件商品{fetching ? ' · 更新中…' : ''}
+              {statusFilter === 'all' && (
                 <Link to="/publish" className="my-products__publish-link">
                   发布新商品
                 </Link>
-              </p>
-            )}
-            <ul className="product-grid" aria-label="我的商品列表">
+              )}
+            </p>
+            <ul
+              className="product-grid"
+              aria-label="我的商品列表"
+              aria-busy={fetching || undefined}
+            >
               {data.items.map((item) => {
                 const manageable = item.status === 'on_sale' || item.status === 'off_sale'
                 return (
                   <li key={item.id}>
                     <ProductCard
                       product={item}
+                      linkable={item.status === 'on_sale'}
                       extra={
                         manageable ? (
                           <>
@@ -211,8 +216,9 @@ function MyProducts() {
         onOk={handleDelete}
         onCancel={() => setDeleteTarget(null)}
         okText="删除"
-        okButtonProps={{ danger: true, autoFocus: true }}
+        okButtonProps={{ danger: true }}
         cancelText="取消"
+        cancelButtonProps={{ autoFocus: true }}
         confirmLoading={deleting}
         focusTriggerAfterClose
       >

@@ -40,14 +40,14 @@ function MyFavorites() {
   const [page, setPage] = useState(1)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
-  /** 已取消的条目（就地移除，等待下次取数自然对齐） */
+  /** 已取消的条目：就地隐藏，避免「重取当前页」落盘前回闪（total 仍以服务端回包为准） */
   const [removedIds, setRemovedIds] = useState<ReadonlySet<number>>(new Set())
 
   const fetchPage = useCallback((): Promise<Paginated<FavoriteItem>> => {
     return listMyFavorites(page, PAGE_SIZE)
   }, [page])
 
-  const { data, loading, error, retry } = useQueryList(fetchPage)
+  const { data, loading, fetching, error, retry } = useQueryList(fetchPage)
 
   function handleUnfavorite(item: FavoriteItem): void {
     if (busyId != null) return
@@ -55,7 +55,16 @@ function MyFavorites() {
     setBusyId(item.id)
     unfavoriteProduct(item.id)
       .then(() => {
+        // 先就地隐藏，避免重取期间条目回闪
         setRemovedIds((prev) => new Set(prev).add(item.id))
+        // 以服务端回包的页码为准（越界时服务端会收敛），删空当前页且非首页则回退一页
+        const currentPage = data?.page ?? page
+        if (currentPage > 1 && (data?.items.length ?? 0) <= 1) {
+          setPage(currentPage - 1)
+        } else {
+          // 重取当前页：total / pages 以服务端回包为准（不跨页累计）
+          retry()
+        }
       })
       .catch((err: unknown) => {
         if (!isTokenInvalidError(err)) {
@@ -83,7 +92,7 @@ function MyFavorites() {
         loading={loading}
         error={error}
         onRetry={retry}
-        empty={visibleItems.length === 0}
+        empty={visibleItems.length === 0 && !fetching}
         emptyDescription={
           <span>
             还没有收藏任何商品，
@@ -94,13 +103,14 @@ function MyFavorites() {
         {data && (
           <>
             <p className="my-favorites__hint" aria-live="polite">
-              共 {Math.max(data.total - removedIds.size, 0)} 件收藏
+              共 {data.total} 件收藏{fetching ? ' · 更新中…' : ''}
             </p>
-            <ul className="product-grid" aria-label="收藏列表">
+            <ul className="product-grid" aria-label="收藏列表" aria-busy={fetching || undefined}>
               {visibleItems.map((item) => (
                 <li key={item.id}>
                   <ProductCard
                     product={item}
+                    linkable={item.status === 'on_sale'}
                     extra={
                       <>
                         <span className="my-favorites__time">
@@ -124,7 +134,7 @@ function MyFavorites() {
             <Pagination
               className="product-list__pagination"
               current={data.page}
-              total={Math.max(data.total - removedIds.size, 0)}
+              total={data.total}
               pageSize={data.page_size}
               showSizeChanger={false}
               hideOnSinglePage

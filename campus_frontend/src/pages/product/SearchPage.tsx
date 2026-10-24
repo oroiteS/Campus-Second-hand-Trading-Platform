@@ -1,5 +1,5 @@
 import { Pagination } from 'antd'
-import { useCallback, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   Navigate,
   useLocation,
@@ -21,6 +21,9 @@ import './product.css'
 
 const PAGE_SIZE = 20
 
+/** 价格区间输入停顿多久后写入 URL 并取数（与列表页同口径，消除逐字符请求） */
+const TEXT_DEBOUNCE_MS = 300
+
 const CONDITIONS: readonly ProductCondition[] = [
   'brand_new',
   'as_new',
@@ -41,8 +44,9 @@ function parseCondition(value: string | null): ProductCondition | null {
 
 /**
  * 批量更新 URL query（空值删除；筛选变更时重置页码）。
- * replace：逐字符输入（价格区间）过程中为 true，避免每个字符压入一条历史记录；
+ * replace：文本输入（价格区间）提交时为 true，避免逐字符压入历史记录；
  * 离散变更（下拉/翻页/搜索提交）保持 false，回退可还原上一筛选态。
+ * 与当前 URL 等价时跳过，避免无谓导航。
  */
 function applyParamPatch(
   navigate: NavigateFunction,
@@ -58,7 +62,9 @@ function applyParamPatch(
       next.set(key, value)
     }
   }
-  navigate(`?${next.toString()}`, { replace: options?.replace === true })
+  const query = next.toString()
+  if (query === current.toString()) return
+  navigate(`?${query}`, { replace: options?.replace === true })
 }
 
 /**
@@ -106,6 +112,61 @@ function SearchViewInner() {
   )
   const priceInvalid = Boolean(priceErrors.min || priceErrors.max || priceErrors.range)
 
+  // 价格区间草稿：只承载「尚未提交的编辑」，与 typing 时的 URL 价格签名绑定；
+  // 提交成功即清空草稿回落 URL 值 —— URL 始终是唯一真值
+  // （q 由 SearchForm 的 key={q} 重挂载同步）。
+  const priceTextKey = JSON.stringify([priceMin, priceMax])
+  const [draftState, setDraftState] = useState<{
+    key: string
+    prices: { priceMin: string; priceMax: string }
+  } | null>(null)
+
+  // a 回退/前进断言：签名变化（回退/前进/直链/自身提交）即丢弃草稿，输入框立刻回落 URL 值
+  // （渲染期修正 state，不在 effect 里 setState，也不给旧草稿「再前进时复活」的机会）
+  if (draftState !== null && draftState.key !== priceTextKey) {
+    setDraftState(null)
+  }
+  const priceDrafts =
+    draftState !== null && draftState.key === priceTextKey
+      ? draftState.prices
+      : { priceMin, priceMax }
+  const draftPriceMin = priceDrafts.priceMin
+  const draftPriceMax = priceDrafts.priceMax
+
+  /**
+   * 提交一份价格草稿（防抖到期 / 失焦 / 回车 / 清空）：写 URL + 清草稿。
+   * e 分页断言：页码归 1 只取决于「提交后的查询键是否变化」（next 与已提交值比较）。
+   */
+  const commitPrices = useCallback(
+    (next: { priceMin: string; priceMax: string }, replace: boolean): void => {
+      const changed = next.priceMin !== priceMin || next.priceMax !== priceMax
+      setDraftState(null)
+      applyParamPatch(
+        navigate,
+        searchParams,
+        {
+          price_min: next.priceMin.trim() || null,
+          price_max: next.priceMax.trim() || null,
+          ...(changed ? { page: null } : {}),
+        },
+        { replace },
+      )
+    },
+    [navigate, searchParams, priceMin, priceMax],
+  )
+
+  // 草稿与已提交值不一致时才计时提交；b 卸载断言：cleanup 清定时器，卸载后不 navigate
+  useEffect(() => {
+    if (draftPriceMin === priceMin && draftPriceMax === priceMax) {
+      return
+    }
+    const timer = window.setTimeout(
+      () => commitPrices({ priceMin: draftPriceMin, priceMax: draftPriceMax }, true),
+      TEXT_DEBOUNCE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [commitPrices, draftPriceMax, draftPriceMin, priceMax, priceMin])
+
   const fetchPage = useCallback((): Promise<SearchResultData> => {
     const min = priceMin.trim() === '' ? undefined : Number(priceMin)
     const max = priceMax.trim() === '' ? undefined : Number(priceMax)
@@ -120,32 +181,61 @@ function SearchViewInner() {
   }, [q, categoryId, condition, priceMin, priceMax, page])
 
   const enabled = q !== '' && urlQError == null && !priceInvalid
-  const { data, loading, error, retry } = useQueryList(fetchPage, enabled)
+  const { data, loading, fetching, error, retry } = useQueryList(fetchPage, enabled)
 
+  /**
+   * c 一致性断言：离散筛选（分类/成色）一次导航同时提交价格草稿并清空草稿，
+   * 提交后框内显示即 URL 里的查询条件（不出现三方不一致）。
+   */
   function handleFilterChange(patch: Partial<FilterValues>): void {
-    const next: Record<string, string | null> = { page: null }
-    if ('categoryId' in patch) {
-      next.category = patch.categoryId != null ? String(patch.categoryId) : null
+    const nextPrices = {
+      priceMin: 'priceMin' in patch ? (patch.priceMin ?? '') : draftPriceMin,
+      priceMax: 'priceMax' in patch ? (patch.priceMax ?? '') : draftPriceMax,
     }
-    if ('condition' in patch) {
-      next.condition = patch.condition ?? null
+    const textTouched = 'priceMin' in patch || 'priceMax' in patch
+    const discreteTouched = 'categoryId' in patch || 'condition' in patch
+
+    if (textTouched) {
+      // 文本输入只落草稿，停顿 300ms（失焦/回车立即）后统一提交，避免逐字符一请求
+      setDraftState({ key: priceTextKey, prices: nextPrices })
+      // d 清空断言：删空立即清参（不等防抖），空值不写空串参数
+      const cleared =
+        (nextPrices.priceMin.trim() === '' && priceMin !== '') ||
+        (nextPrices.priceMax.trim() === '' && priceMax !== '')
+      if (cleared) commitPrices(nextPrices, true)
     }
-    if ('priceMin' in patch) {
-      next.price_min = patch.priceMin?.trim() || null
+
+    if (discreteTouched) {
+      setDraftState(null)
+      applyParamPatch(navigate, searchParams, {
+        page: null,
+        ...('categoryId' in patch
+          ? { category: patch.categoryId != null ? String(patch.categoryId) : null }
+          : {}),
+        ...('condition' in patch ? { condition: patch.condition ?? null } : {}),
+        price_min: nextPrices.priceMin.trim() || null,
+        price_max: nextPrices.priceMax.trim() || null,
+      })
     }
-    if ('priceMax' in patch) {
-      next.price_max = patch.priceMax?.trim() || null
-    }
-    // 逐字符输入（价格区间）过程 replace:true 防历史记录爆炸；离散变更保留回退语义
-    const typing = 'priceMin' in patch || 'priceMax' in patch
-    applyParamPatch(navigate, searchParams, next, { replace: typing })
   }
 
+  /** 翻页：作用于已提交查询键；有未提交草稿则随本次导航提交并归第 1 页 */
   function handlePageChange(next: number): void {
-    applyParamPatch(navigate, searchParams, { page: String(next) })
+    const textChanged = draftPriceMin !== priceMin || draftPriceMax !== priceMax
+    setDraftState(null)
+    applyParamPatch(navigate, searchParams, {
+      price_min: draftPriceMin.trim() || null,
+      price_max: draftPriceMax.trim() || null,
+      page: textChanged ? null : String(next),
+    })
   }
 
-  const filterValues: FilterValues = { categoryId, condition, priceMin, priceMax }
+  const filterValues: FilterValues = {
+    categoryId,
+    condition,
+    priceMin: draftPriceMin,
+    priceMax: draftPriceMax,
+  }
 
   return (
     <div className="page-container">
@@ -154,13 +244,23 @@ function SearchViewInner() {
       <SearchForm
         key={q}
         initialQ={q}
-        onSearch={(nextQ) => applyParamPatch(navigate, searchParams, { q: nextQ, page: null })}
+        onSearch={(nextQ) => {
+          // 提交搜索词时一并提交价格草稿（与离散筛选同口径），页码归 1
+          setDraftState(null)
+          applyParamPatch(navigate, searchParams, {
+            q: nextQ,
+            page: null,
+            price_min: draftPriceMin.trim() || null,
+            price_max: draftPriceMax.trim() || null,
+          })
+        }}
       />
 
       <FilterBar
         idPrefix="product-search"
         values={filterValues}
         onChange={handleFilterChange}
+        onCommitText={() => commitPrices({ priceMin: draftPriceMin, priceMax: draftPriceMax }, true)}
         priceErrors={priceErrors}
       />
 
@@ -181,7 +281,7 @@ function SearchViewInner() {
             loading={loading}
             error={error}
             onRetry={retry}
-            empty={(data?.items.length ?? 0) === 0}
+            empty={(data?.items.length ?? 0) === 0 && !fetching}
             emptyDescription="没有找到相关商品，换个关键词或放宽筛选试试"
           >
             {data && (
@@ -189,8 +289,13 @@ function SearchViewInner() {
                 <p className="product-list__meta" aria-live="polite">
                   「{q}」共 {data.total} 条结果
                   {data.degraded ? '（当前为标题匹配降级结果）' : '（按相关度排序）'}
+                  {fetching ? ' · 更新中…' : ''}
                 </p>
-                <ul className="product-grid" aria-label="搜索结果列表">
+                <ul
+                  className="product-grid"
+                  aria-label="搜索结果列表"
+                  aria-busy={fetching || undefined}
+                >
                   {data.items.map((product: ProductSummary) => (
                     <li key={product.id}>
                       <ProductCard product={product} />

@@ -14,6 +14,8 @@ interface ImageUploaderProps {
   images: UploadedImage[]
   onChange: (images: UploadedImage[]) => void
   disabled?: boolean
+  /** 上传开始/结束联动（页面据此禁用提交，避免图片未传完就发布导致 image_ids 缺项） */
+  onUploadingChange?: (uploading: boolean) => void
 }
 
 /** 图片张数上限（契约 image_ids minItems 1 / maxItems 9） */
@@ -26,7 +28,12 @@ export const MAX_PRODUCT_IMAGES = 9
  * - 失败重试（保留最近一次文件）；「上传序即展示序」文案说明；
  * - 拖拽排序不做（YAGNI，删除重传即可）。
  */
-export function ImageUploader({ images, onChange, disabled = false }: ImageUploaderProps) {
+export function ImageUploader({
+  images,
+  onChange,
+  disabled = false,
+  onUploadingChange,
+}: ImageUploaderProps) {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [retryFile, setRetryFile] = useState<File | null>(null)
@@ -37,6 +44,7 @@ export function ImageUploader({ images, onChange, disabled = false }: ImageUploa
 
   async function upload(file: File): Promise<void> {
     setUploading(true)
+    onUploadingChange?.(true)
     setError(null)
     try {
       const imageRef = await uploadImage(file, 'product')
@@ -48,6 +56,7 @@ export function ImageUploader({ images, onChange, disabled = false }: ImageUploa
       }
     } finally {
       setUploading(false)
+      onUploadingChange?.(false)
     }
   }
 

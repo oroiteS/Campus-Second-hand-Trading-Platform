@@ -122,6 +122,8 @@ function PublishForm({ editId }: PublishFormProps) {
   const [formError, setFormError] = useState<string | null>(null)
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  /** 图片上传进行中：提交按钮禁用，避免 image_ids 缺项就发布 */
+  const [imageUploading, setImageUploading] = useState(false)
 
   // 编辑态：拉详情回显（组件按 editId 重挂载；用户身份经 getState 非响应式读取）
   useEffect(() => {
@@ -203,7 +205,8 @@ function PublishForm({ editId }: PublishFormProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
-    if (blockedMessage || submitting) return
+    // 图片仍在上传时不允许提交：此时 image_ids 尚不完整
+    if (blockedMessage || submitting || imageUploading) return
     setFormError(null)
     // 预检（3.0 对照表同源）：非法输入拦截后不发请求
     const next = validateForm()
@@ -230,7 +233,7 @@ function PublishForm({ editId }: PublishFormProps) {
       const fields = extractFieldErrors(err)
       if (fields) {
         // 9001 data.fields 逐字段内联
-        setErrors({
+        const mapped: PublishErrors = {
           title: fields.title,
           description: fields.description,
           price: fields.price,
@@ -239,7 +242,16 @@ function PublishForm({ editId }: PublishFormProps) {
           condition: fields.condition,
           campus_id: fields.campus_id,
           image_ids: fields.image_ids,
-        })
+        }
+        if (Object.values(mapped).some((message) => message != null && message !== '')) {
+          setErrors(mapped)
+        } else {
+          // 后端返回了未知键（如 image_ids.0 / purpose）：无字段可落位时回落表单级提示，
+          // 避免「提交了但页面毫无反应」
+          setFormError(
+            errorMessage(err, isEdit ? '保存失败，请稍后重试' : '发布失败，请稍后重试'),
+          )
+        }
       } else if (err instanceof ApiError && err.code === 3001) {
         setFormError(err.message)
         setBlockedMessage(err.message)
@@ -280,6 +292,8 @@ function PublishForm({ editId }: PublishFormProps) {
             errors={errors}
             formError={formError}
             submitting={submitting}
+            imageUploading={imageUploading}
+            onImageUploadingChange={setImageUploading}
             categoryOptions={(categories.data ?? []).map((c) => ({ label: c.name, value: c.id }))}
             categoryLoading={categories.loading}
             campusOptions={campusOptions}
@@ -318,6 +332,8 @@ function PublishForm({ editId }: PublishFormProps) {
         errors={errors}
         formError={formError}
         submitting={submitting}
+        imageUploading={imageUploading}
+        onImageUploadingChange={setImageUploading}
         categoryOptions={(categories.data ?? []).map((c) => ({ label: c.name, value: c.id }))}
         categoryLoading={categories.loading}
         campusOptions={campusOptions}
@@ -352,6 +368,7 @@ interface PublishFormBodyProps {
   errors: PublishErrors
   formError: string | null
   submitting: boolean
+  imageUploading: boolean
   categoryOptions: Array<{ label: string; value: number }>
   categoryLoading: boolean
   campusOptions: Array<{ label: string; value: number }>
@@ -364,6 +381,7 @@ interface PublishFormBodyProps {
   onCondition: (value: ProductCondition) => void
   onCampus: (value: number) => void
   onImages: (images: UploadedImage[]) => void
+  onImageUploadingChange: (uploading: boolean) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
   onClearFieldError: (field: keyof PublishErrors) => void
 }
@@ -377,6 +395,7 @@ function PublishFormBody(props: PublishFormBodyProps) {
     errors,
     formError,
     submitting,
+    imageUploading,
     categoryOptions,
     categoryLoading,
     campusOptions,
@@ -546,9 +565,12 @@ function PublishFormBody(props: PublishFormBodyProps) {
                 props.onClearFieldError('category_id')
               }}
               status={errors.category_id ? 'error' : undefined}
+              aria-required="true"
+              aria-invalid={errors.category_id ? true : undefined}
+              aria-describedby={errors.category_id ? 'publish-category-error' : undefined}
             />
             {errors.category_id && (
-              <p className="form-field__error" role="alert">
+              <p id="publish-category-error" className="form-field__error" role="alert">
                 {errors.category_id}
               </p>
             )}
@@ -567,9 +589,12 @@ function PublishFormBody(props: PublishFormBodyProps) {
                 props.onClearFieldError('condition')
               }}
               status={errors.condition ? 'error' : undefined}
+              aria-required="true"
+              aria-invalid={errors.condition ? true : undefined}
+              aria-describedby={errors.condition ? 'publish-condition-error' : undefined}
             />
             {errors.condition && (
-              <p className="form-field__error" role="alert">
+              <p id="publish-condition-error" className="form-field__error" role="alert">
                 {errors.condition}
               </p>
             )}
@@ -589,9 +614,12 @@ function PublishFormBody(props: PublishFormBodyProps) {
                   props.onClearFieldError('campus_id')
                 }}
                 status={errors.campus_id ? 'error' : undefined}
+                aria-required="true"
+                aria-invalid={errors.campus_id ? true : undefined}
+                aria-describedby={errors.campus_id ? 'publish-campus-error' : undefined}
               />
               {errors.campus_id && (
-                <p className="form-field__error" role="alert">
+                <p id="publish-campus-error" className="form-field__error" role="alert">
                   {errors.campus_id}
                 </p>
               )}
@@ -599,22 +627,44 @@ function PublishFormBody(props: PublishFormBodyProps) {
           )}
         </div>
 
-        <div className="form-field">
+        <div
+          className="form-field"
+          role="group"
+          aria-labelledby="publish-images-label"
+          aria-describedby={errors.image_ids ? 'publish-images-error' : undefined}
+        >
           <span className="form-field__label" id="publish-images-label">
             商品图片
           </span>
-          <ImageUploader images={props.images} onChange={props.onImages} disabled={submitting} />
+          <ImageUploader
+            images={props.images}
+            onChange={props.onImages}
+            disabled={submitting}
+            onUploadingChange={props.onImageUploadingChange}
+          />
           {errors.image_ids && (
-            <p className="form-field__error" role="alert">
+            <p id="publish-images-error" className="form-field__error" role="alert">
               {errors.image_ids}
             </p>
           )}
         </div>
 
         <div className="account-form__actions">
-          <Button type="primary" htmlType="submit" loading={submitting} aria-busy={submitting}>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={submitting}
+            disabled={imageUploading}
+            aria-busy={submitting}
+            aria-describedby={imageUploading ? 'publish-submit-hint' : undefined}
+          >
             {isEdit ? '保存修改' : '发布'}
           </Button>
+          {imageUploading && (
+            <p id="publish-submit-hint" className="form-field__hint" role="status">
+              图片上传中，完成后可提交
+            </p>
+          )}
           {originId != null && <Link to={`/products/${originId}`}>返回详情</Link>}
         </div>
       </form>

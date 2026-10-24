@@ -16,8 +16,25 @@ export function readStateString(state: unknown, key: string): string | undefined
   return typeof value === 'string' ? value : undefined
 }
 
-/** 读取站内路径字段（须以 / 开头，防外链注入）；不符返回 undefined */
+/**
+ * 是否为站内绝对路径（可安全用于导航 / 回跳）。
+ * 拒绝三类注入形态：
+ * - 非 `/` 开头（相对路径、绝对 URL、空值）；
+ * - 协议相对路径 `//evil.com`（浏览器按当前协议跨域跳转）；
+ * - 含反斜杠的 `/\\evil.com`（部分浏览器会归一化为协议相对路径）。
+ */
+export function isInternalPath(value: string | null | undefined): value is string {
+  if (value == null || !value.startsWith('/')) {
+    return false
+  }
+  if (value.startsWith('//') || value.includes('\\')) {
+    return false
+  }
+  return true
+}
+
+/** 读取站内路径字段（须为站内路径，防外链注入）；不符返回 undefined */
 export function readStatePath(state: unknown, key: string): string | undefined {
   const value = readStateString(state, key)
-  return value && value.startsWith('/') ? value : undefined
+  return isInternalPath(value) ? value : undefined
 }

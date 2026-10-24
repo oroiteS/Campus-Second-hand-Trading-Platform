@@ -25,6 +25,8 @@ import {
 import { PRODUCT_STATUS_TEXT } from '../../utils/statusText'
 import { ApiError } from '../http'
 import { MOCK_CATEGORIES } from './categories'
+import { SVG_NAMESPACE } from './imageData'
+import { paginate } from './paginate'
 import { findMockUpload, isOwnedUpload } from './uploads'
 import {
   MOCK_ACCOUNTS,
@@ -36,8 +38,8 @@ import {
 /**
  * 商品域 mock（products tag 8 接口，契约 0.3.0 逐字段同构）。
  *
- * 商品池 ≥ 60 条：6 分类 × 5 成色 × 三档价格区间全覆盖；其中 ≥3 条标题不含
- * 「机械键盘」但描述含键盘类语义（联调 AC-09 的 mock 预演，搜索「机械键盘」
+ * 商品池 65 条：6 分类逐分类覆盖 <50 / 50–500 / >500 三档价格与 5 档成色；其中 ≥3 条
+ * 标题不含「机械键盘」但描述含键盘类语义（联调 AC-09 的 mock 预演，搜索「机械键盘」
  * 可在标题命中之后召回这些描述命中条目）。
  *
  * 演示账号绑定：mock 认证通过的在校学生只有 student02（id 1002 小明），
@@ -133,7 +135,7 @@ interface SeedItem {
   desc: string
 }
 
-// 每分类种子：价格覆盖 <50 / 50–500 / >500 三档；成色 5 档轮转。
+// 每分类种子：价格覆盖 <50 / 50–500 / >500 三档（逐分类口径）；成色 5 档轮转。
 // 数码电子含 3 条「标题无键盘、描述含机械键盘」的语义搜索演示条目（AC-09）。
 const SEEDS: Array<{ categoryId: number; items: SeedItem[] }> = [
   {
@@ -165,6 +167,7 @@ const SEEDS: Array<{ categoryId: number; items: SeedItem[] }> = [
       { title: '操作系统导论（黑书）', price: 70, original: 139, condition: 'excellent', desc: 'OSTEP 中文版，九成新，无笔记。' },
       { title: '线性代数辅导讲义 李永乐', price: 20, original: 38, condition: 'good', desc: '考研复习用，重点章节有荧光笔标记。' },
       { title: '民法典（教学版）', price: 30, original: 58, condition: 'fair', desc: '法学教材，内页有少量笔记，不影响阅读。' },
+      { title: '考研数学辅导全套（李永乐 + 张宇 10 本）', price: 680, original: 1380, condition: 'excellent', desc: '含讲义、真题与习题册，仅少量划线重点，整套出，不单卖。' },
     ],
   },
   {
@@ -180,6 +183,7 @@ const SEEDS: Array<{ categoryId: number; items: SeedItem[] }> = [
       { title: '316 不锈钢保温杯 500ml', price: 25, original: 59, condition: 'brand_new', desc: '全新带吊牌，赠杯刷，保温 6 小时以上。' },
       { title: 'USB 静音台式风扇', price: 35, original: 75, condition: 'good', desc: '三档风速，宿舍床头用了一季，噪音很小。' },
       { title: '宿舍遮光床帘 90cm', price: 28, original: 56, condition: 'as_new', desc: '遮光率 90%，支架齐全，洗过晾干。' },
+      { title: '迷你冰箱 50L 宿舍单人', price: 520, original: 899, condition: 'good', desc: '制冷正常无异味，门封条完好，毕业清仓，仅限校内自提。' },
     ],
   },
   {
@@ -210,12 +214,14 @@ const SEEDS: Array<{ categoryId: number; items: SeedItem[] }> = [
       { title: '格纹羊毛围巾', price: 45, original: 129, condition: 'as_new', desc: '澳洲羊毛，无勾丝起球，附吊牌。' },
       { title: '回力经典帆布鞋 41 码', price: 59, original: 119, condition: 'good', desc: '国潮经典款，鞋面洁净，橡胶鞋底磨损少。' },
       { title: '行李箱 20 寸登机箱', price: 118, original: 269, condition: 'excellent', desc: '万向轮顺滑，TSA 密码锁，箱面细划痕。' },
+      { title: '北面三合一冲锋衣 M 码', price: 780, original: 1899, condition: 'good', desc: '抓绒内胆可拆，防水外层无破损，袖口轻微磨白。' },
     ],
   },
   {
     categoryId: 6,
     items: [
       { title: '民谣吉他 41 寸初学款', price: 330, original: 699, condition: 'fair', desc: '云杉面板，弦距已调低，适合入门，附变调夹。' },
+      { title: '雅马哈 F310 民谣吉他 41 寸', price: 620, original: 1080, condition: 'excellent', desc: '单板面板，弦距舒适，音准稳定，附琴包、背带与拨片。' },
       { title: '桌面小绿萝盆栽', price: 8, original: 20, condition: 'good', desc: '水培转土培，长势旺盛，附白瓷盆。' },
       { title: '拼图 1000 片 梵高星月夜', price: 28, original: 68, condition: 'brand_new', desc: '全新未拆封，缺片包换，附图纸。' },
       { title: '五子棋围棋二合一木盒', price: 20, original: 45, condition: 'good', desc: '实木棋盘，棋子齐全，盒盖即棋盘。' },
@@ -255,15 +261,17 @@ function nextImageIds(count: number): number[] {
   return ids
 }
 
-/** 按分类配色的 inline SVG data URI 占位图（mock 图源铁律：零外网图源） */
+/** 按分类配色的 inline SVG data URI 占位图（mock 图源铁律：零外网图源）
+ *
+ * 不复用 `imageData.svgDataUrl`：本图需「分类底色 + 内嵌白卡 + 左对齐双行
+ * （标题 + 序号）」三段版式，而公共函数只支持纯底色 + 居中文本，强行参数化
+ * 会把仅商品用的版式塞进公共签名。但 xmlns **仍复用** `SVG_NAMESPACE`，
+ * 命名空间拼接全目录只有一处定义。
+ */
 function svgDataUrl(categoryId: number, label: string, seq: number): string {
-  // SVG 命名空间分段拼接：保持本目录源码零 http 字面（任务卡图源铁律）。
-  // xmlns 为 data URI SVG 的必需命名空间（W3C 规范要求），非外网图源；
-  // 经第 1 轮审查豁免 grep 门槛（豁免由主 agent 登记看板）。
-  const ns = 'http' + '://' + 'www.w3.org/2000/svg'
   const text = label.length > 9 ? `${label.slice(0, 9)}…` : label
   const svg =
-    `<svg xmlns='${ns}' width='600' height='450'>` +
+    `<svg xmlns='${SVG_NAMESPACE}' width='600' height='450'>` +
     `<rect width='600' height='450' fill='${CATEGORY_COLORS[categoryId] ?? '#495057'}'/>` +
     `<rect x='20' y='20' width='560' height='410' rx='20' fill='#ffffff' fill-opacity='0.88'/>` +
     `<text x='44' y='210' font-size='38' font-family='sans-serif' fill='#1f2937'>${text}</text>` +
@@ -313,7 +321,7 @@ function buildProduct(input: {
   }
 }
 
-/** 池初始化（模块加载时一次）：61 条他人商品 + 7 条「我的商品」= 68 条 */
+/** 池初始化（模块加载时一次）：65 条他人商品 + 7 条「我的商品」= 72 条 */
 function initPool(): void {
   const base = dayjs()
   let index = 0
@@ -550,22 +558,6 @@ function toDetail(product: MockProduct, viewer: UserProfile): ProductDetail {
     view_count: product.viewCount,
     is_favorited: favorited,
     updated_at: product.updatedAt,
-  }
-}
-
-/** 分页切片（契约 PaginatedData：page ≥ 1，pages = ceil(total/page_size)，空表为 0） */
-function paginate<T>(items: T[], page: number, pageSize: number): Paginated<T> {
-  const total = items.length
-  const pages = Math.ceil(total / pageSize)
-  const safePageSize = Math.min(Math.max(1, pageSize), 100)
-  const safePage = Math.min(Math.max(1, page), Math.max(pages, 1))
-  const start = (safePage - 1) * safePageSize
-  return {
-    items: items.slice(start, start + safePageSize),
-    page: safePage,
-    page_size: safePageSize,
-    total,
-    pages,
   }
 }
 

@@ -3,6 +3,7 @@ import type { FavoriteActionData, FavoriteItem, Paginated } from '../../types'
 import { delay } from '../../utils/delay'
 import { PRODUCT_STATUS_TEXT } from '../../utils/statusText'
 import { ApiError } from '../http'
+import { paginate } from './paginate'
 import {
   addFavoriteRecord,
   favoritesOfUser,
@@ -12,23 +13,6 @@ import {
   toProductSummary,
   visibleProductForFavorite,
 } from './products'
-import { requireVerifiedSession } from './users'
-
-/** 分页切片（与 products mock 同口径：page ≥ 1；空表 pages = 0） */
-function paginate<T>(items: T[], page: number, pageSize: number): Paginated<T> {
-  const total = items.length
-  const pages = Math.ceil(total / pageSize)
-  const safePageSize = Math.min(Math.max(1, pageSize), 100)
-  const safePage = Math.min(Math.max(1, page), Math.max(pages, 1))
-  const start = (safePage - 1) * safePageSize
-  return {
-    items: items.slice(start, start + safePageSize),
-    page: safePage,
-    page_size: safePageSize,
-    total,
-    pages,
-  }
-}
 
 /**
  * POST /api/products/{id}/favorite：收藏（仅本校 on_sale；重复 → 9003；
@@ -85,14 +69,14 @@ export function mockUnfavoriteProduct(id: number): Promise<FavoriteActionData> {
 
 /**
  * GET /api/favorites/mine：收藏列表（favorited_at 倒序；含 off_sale/sold/trading
- * 条目供前端置灰与取消；deleted 恒不返回）。
+ * 条目供前端置灰与取消；deleted 恒不返回）。管理员 → 9003（与收藏/取消收藏同口径）。
  */
 export function mockListMyFavorites(
   page = 1,
   pageSize = 20,
 ): Promise<Paginated<FavoriteItem>> {
   return delay(350).then(() => {
-    const user = requireVerifiedSession()
+    const user = requireVerifiedStudentFor('查看收藏列表')
     const items: FavoriteItem[] = []
     favoritesOfUser(user.id).forEach((favoritedAt, productId) => {
       const product = findProduct(productId)
