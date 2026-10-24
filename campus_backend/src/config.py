@@ -131,10 +131,9 @@ class Config:
     DB_TABLE_PREFIX = _env_str("DB_TABLE_PREFIX", "")
 
     # ---- MongoDB ----
-    MONGO_URI = _env_str(
-        "MONGO_URI",
-        "mongodb://root:change_me@127.0.0.1:27017/campus_market?authSource=admin",
-    )
+    # 默认值只指向本机（无认证、无 authSource 歧义）；库名由 MONGO_DB 决定。
+    # 远端集群凭据只写本地 .env，绝不入仓（NFR-13）。
+    MONGO_URI = _env_str("MONGO_URI", "mongodb://127.0.0.1:27017/campus_market")
     MONGO_DB = _env_str("MONGO_DB", "campus_market")
 
     # ---- Redis ----
